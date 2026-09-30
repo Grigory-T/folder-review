@@ -7,9 +7,12 @@ the output.
 
 ## Requirements
 
-- Windows 10 or 11
+- Windows 10 or 11 (primary platform)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - [7-Zip](https://www.7-zip.org/) for RAR extraction
+
+Linux is supported as a secondary platform and needs an available `7z`,
+`unrar`, or `unar` command for RAR extraction. macOS is not supported.
 
 Clone the repository into a local folder:
 
@@ -21,7 +24,8 @@ Set-Location .\folder-review
 After cloning, only two actions are needed:
 
 1. Open `folder_review.py` and replace `PASTE_FOLDER_PATH_HERE` in
-   `ROOT_FOLDER` with the folder to inspect.
+   `ROOT_FOLDER` with the local, mapped-drive, or UNC folder to inspect, for
+   example `r"\\server\share\folder"`.
 2. Run `RUN.bat`.
 
 The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
@@ -34,14 +38,34 @@ The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
   any order.
 - DOCX, XLSX, PPTX, EPUB, and JAR ZIP containers remain single logical files.
 - Directory links are not followed.
+- Local folders, mapped network drives, and Windows UNC paths are supported.
+- Folder enumeration and file inspection use 16 workers by default. Archive
+  extraction is capped separately to avoid excessive memory use.
 - Empty, encrypted, damaged, unsupported, or safety-limited archive members are
   retained as rows with an error instead of stopping the scan.
 - Nested archives use temporary local storage and are removed after inspection.
 
+Physical files include Windows/Python filesystem properties: hidden status,
+`st_mode`, `st_ino`, `st_dev`, `st_nlink`, `st_uid`, `st_gid`, size, access
+time, modification time, and creation time when the operating system provides
+it. Archive members are logical files rather than OS filesystem objects, so
+their OS-only fields remain blank. Their size, type, hierarchy, and BOM are
+still reported.
+
+BOM detection is independent from file-type detection and recognizes UTF-8,
+UTF-16 LE/BE, and UTF-32 LE/BE markers.
+
 For one-off automation, the configured path can be overridden:
 
 ```powershell
-.\RUN.bat --root "D:\Data" --output ".\data-review.xlsx"
+.\RUN.bat --root "D:\Data" --output ".\data-review.xlsx" --workers 16
+```
+
+On Linux, use the same configured `ROOT_FOLDER` or pass `--root`:
+
+```bash
+uv sync --frozen --no-dev
+uv run python folder_review.py --root /data/folder --workers 16
 ```
 
 ## Development

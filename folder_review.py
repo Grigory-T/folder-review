@@ -10,12 +10,14 @@ import ntpath
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import time
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Semaphore
 
@@ -38,14 +40,15 @@ OUTPUT_FILE = "folder-review.xlsx"
 
 # Runtime limits -------------------------------------------------------------
 
-WORKERS = min(16, max(4, (os.cpu_count() or 4) * 2))
+DEFAULT_WORKERS = 16
+MAX_CONCURRENT_ARCHIVES = 4
 
 MAGIC_READ_SIZE = 8 * 1024
 MAX_ARCHIVE_DEPTH = 20
 MAX_NESTED_ARCHIVE_SIZE = 50 * 1024 * 1024 * 1024
 SEVEN_ZIP_INSPECT_MAX_MEMBERS = 25_000
 EXCEL_MAX_DATA_ROWS = 1_048_570  # rows 7..1,048,576
-HEAVY_ARCHIVE_SLOTS = Semaphore(2)
+HEAVY_ARCHIVE_SLOTS = Semaphore(MAX_CONCURRENT_ARCHIVES)
 ARCHIVE_TYPES = {"ZIP archive", "7z archive", "RAR archive"}
 STREAM_ARCHIVE_TYPES = {
     "ZIP container": "ZIP archive",
@@ -88,16 +91,31 @@ MAGIC_SIGNATURES = (
 
 ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
-TEXT_BOMS = (
-    (b"\xef\xbb\xbf", "Text (UTF-8 BOM)"),
-    (b"\xff\xfe\x00\x00", "Text (UTF-32 LE BOM)"),
-    (b"\x00\x00\xfe\xff", "Text (UTF-32 BE BOM)"),
-    (b"\xff\xfe", "Text (UTF-16 LE BOM)"),
-    (b"\xfe\xff", "Text (UTF-16 BE BOM)"),
+BOM_SIGNATURES = (
+    (b"\xef\xbb\xbf", "UTF-8"),
+    (b"\xff\xfe\x00\x00", "UTF-32 LE"),
+    (b"\x00\x00\xfe\xff", "UTF-32 BE"),
+    (b"\xff\xfe", "UTF-16 LE"),
+    (b"\xfe\xff", "UTF-16 BE"),
 )
+BOM_NOT_PRESENT = "нет"
 
 
 # Data models ----------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class FileProperties:
+    hidden: str
+    mode: int
+    inode: str
+    device: str
+    links: int
+    user_id: str | None
+    group_id: str | None
+    accessed_at: datetime | None
+    modified_at: datetime | None
+    created_at: datetime | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -105,6 +123,7 @@ class PhysicalFile:
     path: str
     levels: tuple[str, ...]
     size: int
+    properties: FileProperties | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -114,6 +133,7 @@ class ArchiveNode:
     levels: tuple[str, ...]
     size: int
     depth: int
+    properties: FileProperties | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -125,6 +145,8 @@ class ResultRow:
     size: int
     content_type: str
     in_archive: str
+    bom: str | None = None
+    properties: FileProperties | None = None
     error: str | None = None
 
 
@@ -159,6 +181,46 @@ def extension_of(name: str) -> str:
     return ntpath.splitext(name)[1].lstrip(".").lower()
 
 
+def timestamp_value(value: float | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return (
+            datetime.fromtimestamp(value, tz=UTC)
+            .astimezone()
+            .replace(tzinfo=None, microsecond=0)
+        )
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def file_properties(name: str, result: os.stat_result) -> FileProperties:
+    if os.name == "nt":
+        hidden_mask = getattr(stat, "FILE_ATTRIBUTE_HIDDEN", 0x2)
+        hidden = bool(getattr(result, "st_file_attributes", 0) & hidden_mask)
+    else:
+        hidden = name.startswith(".")
+
+    created_timestamp = getattr(result, "st_birthtime", None)
+    if created_timestamp is None and os.name == "nt":
+        created_timestamp = result.st_ctime
+
+    user_id = getattr(result, "st_uid", None)
+    group_id = getattr(result, "st_gid", None)
+    return FileProperties(
+        hidden="да" if hidden else "нет",
+        mode=result.st_mode,
+        inode=str(result.st_ino),
+        device=str(result.st_dev),
+        links=result.st_nlink,
+        user_id=None if user_id is None else str(user_id),
+        group_id=None if group_id is None else str(group_id),
+        accessed_at=timestamp_value(result.st_atime),
+        modified_at=timestamp_value(result.st_mtime),
+        created_at=timestamp_value(created_timestamp),
+    )
+
+
 def make_row(
     full_path: str,
     levels: tuple[str, ...],
@@ -166,6 +228,9 @@ def make_row(
     content_type: str,
     in_archive: bool,
     error: str | None = None,
+    *,
+    bom: str | None = None,
+    properties: FileProperties | None = None,
 ) -> ResultRow:
     leaf_name = levels[-1]
     return ResultRow(
@@ -176,6 +241,8 @@ def make_row(
         size=size,
         content_type=content_type,
         in_archive="да" if in_archive else "нет",
+        bom=bom,
+        properties=properties,
         error=error,
     )
 
@@ -187,13 +254,20 @@ def is_zip_signature(data: bytes) -> bool:
     return any(data.startswith(signature) for signature in ZIP_SIGNATURES)
 
 
+def detect_bom(data: bytes) -> str | None:
+    for signature, name in BOM_SIGNATURES:
+        if data.startswith(signature):
+            return name
+    return None
+
+
 def detect_magic(data: bytes) -> str:
     if not data:
         return "Empty file"
 
-    for signature, file_type in TEXT_BOMS:
-        if data.startswith(signature):
-            return file_type
+    bom = detect_bom(data)
+    if bom is not None:
+        return f"Text ({bom} BOM)"
 
     if is_zip_signature(data):
         return "ZIP container"
@@ -292,19 +366,23 @@ def classify_ole_path(file_path: str) -> str:
     return "OLE2 compound file"
 
 
-def detect_file_type(file_path: str) -> str:
+def inspect_file(file_path: str) -> tuple[str, str | None]:
     try:
         with open(extended_path(file_path), "rb", buffering=0) as file:
             head = file.read(MAGIC_READ_SIZE)
     except OSError:
-        return "Unreadable"
+        return "Unreadable", None
 
     file_type = detect_magic(head)
     if file_type == "ZIP container":
-        return classify_zip_path(file_path)
-    if file_type == "OLE2 compound file":
-        return classify_ole_path(file_path)
-    return file_type
+        file_type = classify_zip_path(file_path)
+    elif file_type == "OLE2 compound file":
+        file_type = classify_ole_path(file_path)
+    return file_type, detect_bom(head) or BOM_NOT_PRESENT
+
+
+def detect_file_type(file_path: str) -> str:
+    return inspect_file(file_path)[0]
 
 
 # Physical folder scan -------------------------------------------------------
@@ -329,9 +407,14 @@ def scan_folder(
                     elif entry.is_file(follow_symlinks=False):
                         if normalized_key(logical_path) in excluded_paths:
                             continue
-                        size = entry.stat(follow_symlinks=False).st_size
+                        stat_result = entry.stat(follow_symlinks=False)
                         files.append(
-                            PhysicalFile(logical_path, levels + (entry.name,), size)
+                            PhysicalFile(
+                                logical_path,
+                                levels + (entry.name,),
+                                stat_result.st_size,
+                                file_properties(entry.name, stat_result),
+                            )
                         )
                 except OSError:
                     skipped_entries += 1
@@ -342,13 +425,15 @@ def scan_folder(
 
 
 def scan_tree(
-    root_folder: str, excluded_paths: set[str]
+    root_folder: str,
+    excluded_paths: set[str],
+    workers: int = DEFAULT_WORKERS,
 ) -> tuple[list[PhysicalFile], ScanStats]:
     all_files: list[PhysicalFile] = []
     stats = ScanStats()
     last_print = time.monotonic()
 
-    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         pending = {executor.submit(scan_folder, root_folder, (), excluded_paths)}
 
         while pending:
@@ -385,6 +470,7 @@ def archive_row(
     node: ArchiveNode,
     file_type: str,
     error: str | None = None,
+    bom: str | None = None,
 ) -> ResultRow:
     return make_row(
         node.logical_path,
@@ -393,6 +479,8 @@ def archive_row(
         file_type,
         node.depth > 0,
         error,
+        bom=bom,
+        properties=node.properties,
     )
 
 
@@ -434,7 +522,16 @@ def inspect_member_stream(
 
     archive_type = raw_archive_type(head)
     if archive_type is None:
-        return [make_row(logical_path, levels, size, detect_magic(head), True)]
+        return [
+            make_row(
+                logical_path,
+                levels,
+                size,
+                detect_magic(head),
+                True,
+                bom=detect_bom(head) or BOM_NOT_PRESENT,
+            )
+        ]
 
     depth = parent_depth + 1
     if depth >= MAX_ARCHIVE_DEPTH:
@@ -678,7 +775,16 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
         product = factory.products.get(info.filename)
 
         if size == 0:
-            rows.append(make_row(logical_path, levels, 0, "Empty file", True))
+            rows.append(
+                make_row(
+                    logical_path,
+                    levels,
+                    0,
+                    "Empty file",
+                    True,
+                    bom=BOM_NOT_PRESENT,
+                )
+            )
         elif product is None or not product.head:
             rows.append(
                 make_row(
@@ -724,6 +830,7 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                     size,
                     detect_magic(bytes(product.head)),
                     True,
+                    bom=detect_bom(bytes(product.head)) or BOM_NOT_PRESENT,
                 )
             )
     return rows
@@ -790,15 +897,23 @@ def expand_rar(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
     return rows
 
 
-def process_archive_node(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
-    file_type = detect_file_type(node.source_path)
+def process_archive_node(
+    node: ArchiveNode,
+    temp_dir: str,
+    known_file_type: str | None = None,
+    known_bom: str | None = None,
+) -> list[ResultRow]:
+    if known_file_type is None:
+        file_type, bom = inspect_file(node.source_path)
+    else:
+        file_type, bom = known_file_type, known_bom
     if file_type not in ARCHIVE_TYPES:
         error = None
         if file_type == "Unreadable":
             error = "File could not be read"
         elif file_type == "ZIP container (unreadable)":
             error = "Invalid or unsupported ZIP container"
-        return [archive_row(node, file_type, error)]
+        return [archive_row(node, file_type, error, bom)]
 
     if node.depth >= MAX_ARCHIVE_DEPTH:
         return [
@@ -817,32 +932,53 @@ def process_archive_node(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
 
 
 def process_file(item: PhysicalFile) -> list[ResultRow]:
-    file_type = detect_file_type(item.path)
+    file_type, bom = inspect_file(item.path)
     if file_type in ARCHIVE_TYPES:
         with (
             HEAVY_ARCHIVE_SLOTS,
             tempfile.TemporaryDirectory(prefix="folder-review-") as temp_dir,
         ):
-            node = ArchiveNode(item.path, item.path, item.levels, item.size, 0)
-            return process_archive_node(node, temp_dir)
+            node = ArchiveNode(
+                item.path,
+                item.path,
+                item.levels,
+                item.size,
+                0,
+                item.properties,
+            )
+            return process_archive_node(node, temp_dir, file_type, bom)
 
     error = None
     if file_type == "Unreadable":
         error = "File could not be read"
     elif file_type == "ZIP container (unreadable)":
         error = "Invalid or unsupported ZIP container"
-    return [make_row(item.path, item.levels, item.size, file_type, False, error)]
+    return [
+        make_row(
+            item.path,
+            item.levels,
+            item.size,
+            file_type,
+            False,
+            error,
+            bom=bom,
+            properties=item.properties,
+        )
+    ]
 
 
-def inspect_files(physical_files: list[PhysicalFile]) -> list[ResultRow]:
+def inspect_files(
+    physical_files: list[PhysicalFile],
+    workers: int = DEFAULT_WORKERS,
+) -> list[ResultRow]:
     rows: list[ResultRow] = []
     completed = 0
     last_print = time.monotonic()
 
     items = iter(physical_files)
-    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         pending = set()
-        for _ in range(WORKERS * 2):
+        for _ in range(workers * 2):
             try:
                 pending.add(executor.submit(process_file, next(items)))
             except StopIteration:
@@ -919,10 +1055,23 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
     level_headers = [f"Уровень {index}" for index in range(1, max_level + 1)]
     data_headers = level_headers + [
         "Уровень листа",
-        "Имя листа",
-        "Полный путь",
+        "Полный путь к файлу",
+        "Имя файла",
         "Расширение",
+        "Полное имя файла",
+        "Скрытый",
+        "st_mode",
+        "st_ino",
+        "st_dev",
+        "st_nlink",
+        "st_uid (User ID of the owner)",
+        "st_gid (Group ID of the owner)",
+        "Размер файла в мб",
         "Размер файла, байт",
+        "Время последнего обращения к файлу",
+        "Время последнего изменения файла",
+        "Время создания файла",
+        "BOM",
         "Тип по содержимому",
         "В архиве",
         "Ошибка",
@@ -976,11 +1125,26 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
     first_table_column = 2
     last_table_column = first_table_column + len(headers) - 1
     ws.column_dimensions["A"].width = 5.81640625
-    for column in range(first_table_column, last_table_column + 1):
+    wide_columns = {
+        "Полный путь к файлу": 42,
+        "Имя файла": 20,
+        "Полное имя файла": 24,
+        "st_uid (User ID of the owner)": 17,
+        "st_gid (Group ID of the owner)": 17,
+        "Время последнего обращения к файлу": 20,
+        "Время последнего изменения файла": 20,
+        "Время создания файла": 20,
+        "Тип по содержимому": 24,
+        "Ошибка": 20,
+    }
+    for offset, column in enumerate(range(first_table_column, last_table_column + 1)):
         letter = get_column_letter(column)
         boundary = column in (first_table_column, last_table_column)
-        ws.column_dimensions[letter].width = 5.81640625 if boundary else 12.54296875
-    ws.row_dimensions[6].height = 48.65
+        header = headers[offset]
+        ws.column_dimensions[letter].width = (
+            5.81640625 if boundary else wide_columns.get(header, 12.54296875)
+        )
+    ws.row_dimensions[6].height = 72
 
     ws.append([None])
     root_name = os.path.basename(root_folder.rstrip("\\/")) or root_folder
@@ -1019,18 +1183,52 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         )
     ws.append(header_row)
 
-    centered_headers = {"Уровень листа", "Расширение", "В архиве"}
-    for excel_row, row in enumerate(rows, start=7):
+    centered_headers = {
+        "Уровень листа",
+        "Расширение",
+        "Скрытый",
+        "st_mode",
+        "st_ino",
+        "st_dev",
+        "st_nlink",
+        "st_uid (User ID of the owner)",
+        "st_gid (Group ID of the owner)",
+        "BOM",
+        "В архиве",
+    }
+    number_formats = {
+        "Размер файла в мб": "#,##0.000",
+        "Размер файла, байт": "#,##0",
+        "Время последнего обращения к файлу": "yyyy-mm-dd hh:mm:ss",
+        "Время последнего изменения файла": "yyyy-mm-dd hh:mm:ss",
+        "Время создания файла": "yyyy-mm-dd hh:mm:ss",
+    }
+    for row in rows:
+        properties = row.properties
+        stem_name = ntpath.splitext(row.leaf_name)[0]
         values = [
             *(
                 row.levels[index] if index < len(row.levels) else None
                 for index in range(max_level)
             ),
             len(row.levels),
-            row.leaf_name,
             row.full_path,
+            stem_name,
             row.extension,
+            row.leaf_name,
+            properties.hidden if properties else None,
+            properties.mode if properties else None,
+            properties.inode if properties else None,
+            properties.device if properties else None,
+            properties.links if properties else None,
+            properties.user_id if properties else None,
+            properties.group_id if properties else None,
+            row.size / (1024 * 1024),
             row.size,
+            properties.accessed_at if properties else None,
+            properties.modified_at if properties else None,
+            properties.created_at if properties else None,
+            row.bom,
             row.content_type,
             row.in_archive,
             row.error,
@@ -1058,7 +1256,7 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
                     font=normal_font,
                     border=border,
                     alignment=centered if header in centered_headers else None,
-                    number_format="#,##0" if header == "Размер файла, байт" else None,
+                    number_format=number_formats.get(header),
                     force_text=is_text,
                 )
             )
@@ -1070,8 +1268,8 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
 
     last_row = max(6, 6 + len(rows))
     ws.auto_filter.ref = f"B6:{get_column_letter(last_table_column)}{last_row}"
-    ws.sheet_view.selection[0].activeCell = "I6"
-    ws.sheet_view.selection[0].sqref = "I6"
+    ws.sheet_view.selection[0].activeCell = "B6"
+    ws.sheet_view.selection[0].sqref = "B6"
 
     temporary = output_path.with_name(f".{output_path.stem}.tmp.xlsx")
     try:
@@ -1085,14 +1283,35 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
 # Command-line entry point ---------------------------------------------------
 
 
+def validate_platform() -> None:
+    if sys.platform == "darwin":
+        raise RuntimeError("macOS is not supported. Use Windows or Linux.")
+    if os.name != "nt" and not sys.platform.startswith("linux"):
+        raise RuntimeError("This operating system is not supported.")
+
+
+def worker_count(value: str) -> int:
+    workers = int(value)
+    if not 1 <= workers <= 64:
+        raise argparse.ArgumentTypeError("workers must be between 1 and 64")
+    return workers
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
     parser.add_argument("--output", help="Override the local XLSX output path")
+    parser.add_argument(
+        "--workers",
+        type=worker_count,
+        default=DEFAULT_WORKERS,
+        help=f"Concurrent file workers (default: {DEFAULT_WORKERS})",
+    )
     return parser.parse_args()
 
 
 def run() -> int:
+    validate_platform()
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
 
@@ -1117,10 +1336,15 @@ def run() -> int:
     configure_rar_backend()
     started = time.monotonic()
     print(f"Scanning: {root_folder}")
-    physical_files, stats = scan_tree(root_folder, {normalized_key(str(output_path))})
+    print(f"Workers: {args.workers}")
+    physical_files, stats = scan_tree(
+        root_folder,
+        {normalized_key(str(output_path))},
+        args.workers,
+    )
     print(f"Physical files found: {len(physical_files):,}")
 
-    rows = inspect_files(physical_files)
+    rows = inspect_files(physical_files, args.workers)
     print(f"Logical file rows: {len(rows):,}")
     print("Writing Excel workbook...")
     write_workbook(rows, output_path, root_folder)

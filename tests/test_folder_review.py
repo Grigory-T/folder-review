@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 import py7zr
 from openpyxl import load_workbook
@@ -41,10 +42,12 @@ class FolderReviewTests(unittest.TestCase):
         return path
 
     def inspect(self, path: Path) -> list[folder_review.ResultRow]:
+        stat_result = path.stat()
         item = folder_review.PhysicalFile(
             path=str(path),
             levels=(path.name,),
-            size=path.stat().st_size,
+            size=stat_result.st_size,
+            properties=folder_review.file_properties(path.name, stat_result),
         )
         return folder_review.process_file(item)
 
@@ -61,6 +64,7 @@ class FolderReviewTests(unittest.TestCase):
             {
                 "Deep/final.pdf": b"%PDF-1.4\n%%EOF\n",
                 "Deep/book.xlsx": office,
+                "Deep/bom.txt": b"\xff\xfeh\x00i\x00",
             },
         )
         middle = self.make_7z(
@@ -90,7 +94,10 @@ class FolderReviewTests(unittest.TestCase):
             )
         )
         workbook_row = next(row for row in rows if row.leaf_name == "book.xlsx")
+        bom_row = next(row for row in rows if row.leaf_name == "bom.txt")
         self.assertEqual(workbook_row.content_type, "Excel workbook (XLSX)")
+        self.assertEqual(bom_row.bom, "UTF-16 LE")
+        self.assertIsNone(bom_row.properties)
         self.assertFalse(
             any(row.leaf_name in {"middle.7z", "inner.zip"} for row in rows)
         )
@@ -168,13 +175,18 @@ class FolderReviewTests(unittest.TestCase):
         self.assertFalse(any(row.error for row in rows))
 
     def test_workbook_contract(self) -> None:
+        source = self.root / "leaf.pdf"
+        source.write_bytes(b"%PDF-1.4\n")
+        properties = folder_review.file_properties(source.name, source.stat())
         rows = [
             folder_review.make_row(
-                r"sample.zip::Folder\leaf.pdf",
-                ("sample.zip", "Folder", "leaf.pdf"),
-                12,
+                str(source),
+                ("leaf.pdf",),
+                source.stat().st_size,
                 "PDF",
-                True,
+                False,
+                bom=folder_review.BOM_NOT_PRESENT,
+                properties=properties,
             )
         ]
         output = self.root / "folder-review.xlsx"
@@ -189,11 +201,71 @@ class FolderReviewTests(unittest.TestCase):
             ]
             values = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
             columns = {header: index for index, header in enumerate(headers) if header}
-            self.assertEqual(values[columns["Имя листа"]], "leaf.pdf")
+            requested_headers = {
+                "Полный путь к файлу",
+                "Имя файла",
+                "Расширение",
+                "Полное имя файла",
+                "Скрытый",
+                "st_mode",
+                "st_ino",
+                "st_dev",
+                "st_nlink",
+                "st_uid (User ID of the owner)",
+                "st_gid (Group ID of the owner)",
+                "Размер файла в мб",
+                "Время последнего обращения к файлу",
+                "Время последнего изменения файла",
+                "Время создания файла",
+                "BOM",
+            }
+            self.assertTrue(requested_headers.issubset(columns))
+            self.assertEqual(values[columns["Имя файла"]], "leaf")
+            self.assertEqual(values[columns["Полное имя файла"]], "leaf.pdf")
             self.assertEqual(values[columns["Тип по содержимому"]], "PDF")
-            self.assertEqual(values[columns["В архиве"]], "да")
+            self.assertEqual(values[columns["В архиве"]], "нет")
+            self.assertEqual(values[columns["BOM"]], "нет")
+            self.assertEqual(values[columns["Скрытый"]], "нет")
+            self.assertEqual(values[columns["st_mode"]], properties.mode)
+            self.assertEqual(values[columns["st_ino"]], properties.inode)
+            self.assertIsNotNone(values[columns["Время последнего изменения файла"]])
         finally:
             workbook.close()
+
+    def test_physical_properties_and_utf8_bom(self) -> None:
+        source = self.root / "bom.txt"
+        source.write_bytes(b"\xef\xbb\xbfhello")
+
+        files, stats = folder_review.scan_tree(str(self.root), set(), workers=2)
+        rows = folder_review.inspect_files(files, workers=2)
+
+        self.assertEqual(stats.skipped_entries, 0)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].bom, "UTF-8")
+        self.assertEqual(rows[0].content_type, "Text (UTF-8 BOM)")
+        self.assertIsNotNone(rows[0].properties)
+        self.assertEqual(rows[0].properties.mode, source.stat().st_mode)
+
+    def test_all_supported_bom_variants(self) -> None:
+        cases = {
+            b"\xef\xbb\xbftext": "UTF-8",
+            b"\xff\xfe\x00\x00text": "UTF-32 LE",
+            b"\x00\x00\xfe\xfftext": "UTF-32 BE",
+            b"\xff\xfetext": "UTF-16 LE",
+            b"\xfe\xfftext": "UTF-16 BE",
+            b"plain": None,
+        }
+        for data, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(folder_review.detect_bom(data), expected)
+
+    def test_platform_and_worker_defaults(self) -> None:
+        self.assertEqual(folder_review.DEFAULT_WORKERS, 16)
+        with (
+            mock.patch.object(folder_review.sys, "platform", "darwin"),
+            self.assertRaisesRegex(RuntimeError, "macOS is not supported"),
+        ):
+            folder_review.validate_platform()
 
     def test_archive_path_splits_both_separator_styles(self) -> None:
         self.assertEqual(
