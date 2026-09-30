@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 import zipfile
@@ -261,6 +262,15 @@ class FolderReviewTests(unittest.TestCase):
 
     def test_platform_and_worker_defaults(self) -> None:
         self.assertEqual(folder_review.DEFAULT_WORKERS, 16)
+        if os.name == "nt":
+            self.assertEqual(
+                folder_review.regular_path(r"\\?\UNC\server\share\folder"),
+                r"\\server\share\folder",
+            )
+            self.assertEqual(
+                folder_review.regular_path(r"\\?\unc\server\share\folder"),
+                r"\\server\share\folder",
+            )
         with (
             mock.patch.object(folder_review.sys, "platform", "darwin"),
             self.assertRaisesRegex(RuntimeError, "macOS is not supported"),
@@ -272,6 +282,83 @@ class FolderReviewTests(unittest.TestCase):
             folder_review.split_archive_path(r"First/Second\Third/file.txt"),
             ("First", "Second", "Third", "file.txt"),
         )
+
+    def test_long_physical_archive_and_output_paths(self) -> None:
+        deep_folder = str(self.root)
+        segment = 0
+        while len(deep_folder) < 320:
+            deep_folder = os.path.join(
+                deep_folder,
+                f"long-folder-segment-{segment:02d}-abcdefgh",
+            )
+            segment += 1
+        os.makedirs(folder_review.extended_path(deep_folder))
+
+        inner = self.make_zip(
+            self.root / "long-inner.zip",
+            {"Inside/utf8-bom.txt": b"\xef\xbb\xbflong path"},
+        )
+        outer = self.make_7z(
+            self.root / "long-outer.7z",
+            {"Archive folder/long-inner.zip": inner},
+        )
+        long_archive = os.path.join(deep_folder, "long-outer.7z")
+        with (
+            open(outer, "rb") as source,
+            open(folder_review.extended_path(long_archive), "wb") as destination,
+        ):
+            destination.write(source.read())
+
+        files, stats = folder_review.scan_tree(deep_folder, set(), workers=2)
+        rows = folder_review.inspect_files(files, workers=2)
+
+        self.assertEqual(stats.skipped_folders, 0)
+        self.assertEqual(stats.skipped_entries, 0)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(len(rows), 1)
+        self.assertGreater(len(rows[0].full_path), 260)
+        self.assertEqual(rows[0].leaf_name, "utf8-bom.txt")
+        self.assertEqual(rows[0].bom, "UTF-8")
+        self.assertIsNone(rows[0].error)
+
+        output_folder = os.path.join(deep_folder, "workbook-output")
+        os.mkdir(folder_review.extended_path(output_folder))
+        output = Path(output_folder) / "folder-review.xlsx"
+        folder_review.write_workbook(rows, output, deep_folder)
+
+        self.assertTrue(os.path.isfile(folder_review.extended_path(output)))
+        self.assertFalse(
+            any(
+                name.startswith(".folder-review-")
+                for name in os.listdir(folder_review.extended_path(output_folder))
+            )
+        )
+        workbook = load_workbook(
+            folder_review.extended_path(output),
+            read_only=True,
+            data_only=False,
+        )
+        try:
+            sheet = workbook["folder_review"]
+            values = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
+            self.assertIn("UTF-8", values)
+            self.assertTrue(
+                any(isinstance(value, str) and len(value) > 260 for value in values)
+            )
+        finally:
+            workbook.close()
+
+    def test_temp_member_path_uses_safe_short_random_name(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="folder-review-temp-test-") as root:
+            path = folder_review.make_temp_path(
+                root,
+                "member-with-invalid-extension." + "x" * 300 + "?zip",
+            )
+            try:
+                self.assertLess(len(os.path.basename(path)), 80)
+                self.assertTrue(path.endswith(".bin"))
+            finally:
+                os.unlink(path)
 
 
 if __name__ == "__main__":

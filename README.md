@@ -45,6 +45,26 @@ The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
   retained as rows with an error instead of stopping the scan.
 - Nested archives use temporary local storage and are removed after inspection.
 
+## Long paths and temporary files
+
+On Windows, physical filesystem access uses the extended-length path namespace
+for local, mapped-drive, and UNC paths. This applies to folder enumeration,
+file metadata, content reads, archive access, workbook staging, replacement,
+and cleanup.
+
+Nested archive members are never unpacked into their original hierarchy on
+disk. Only a nested archive that must be opened is copied to the local OS temp
+directory, using a short random filename; it is deleted automatically after
+inspection. The workbook is also written through a short random temporary name
+in the output folder and then replaced atomically.
+
+Keep the cloned repository and its `.venv` in a normal short local path. The
+folder being inspected may use long local or network paths. Filesystems and
+servers can still impose their own limits, and a single Windows path component
+normally cannot exceed 255 characters. Excel cells are limited to 32,767
+characters, so only a still-longer logical path created by archive nesting may
+need to be shortened in the workbook.
+
 Physical files include Windows/Python filesystem properties: hidden status,
 `st_mode`, `st_ino`, `st_dev`, `st_nlink`, `st_uid`, `st_gid`, size, access
 time, modification time, and creation time when the operating system provides

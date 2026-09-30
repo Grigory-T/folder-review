@@ -48,6 +48,7 @@ MAX_ARCHIVE_DEPTH = 20
 MAX_NESTED_ARCHIVE_SIZE = 50 * 1024 * 1024 * 1024
 SEVEN_ZIP_INSPECT_MAX_MEMBERS = 25_000
 EXCEL_MAX_DATA_ROWS = 1_048_570  # rows 7..1,048,576
+EXCEL_MAX_TEXT_LENGTH = 32_767
 HEAVY_ARCHIVE_SLOTS = Semaphore(MAX_CONCURRENT_ARCHIVES)
 ARCHIVE_TYPES = {"ZIP archive", "7z archive", "RAR archive"}
 STREAM_ARCHIVE_TYPES = {
@@ -160,17 +161,37 @@ class ScanStats:
 # Path and row helpers --------------------------------------------------------
 
 
-def extended_path(path: str) -> str:
-    """Return a Windows extended path while leaving other platforms unchanged."""
-    if os.name != "nt" or path.startswith("\\\\?\\"):
-        return path
-    if path.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + path[2:]
-    return "\\\\?\\" + os.path.abspath(path)
+def regular_path(path: str | os.PathLike[str]) -> str:
+    """Remove a Windows extended-path prefix for display and path comparison."""
+    value = os.fspath(path)
+    if os.name != "nt":
+        return value
+    folded = value.casefold()
+    if folded.startswith("\\\\?\\unc\\"):
+        return "\\\\" + value[8:]
+    if folded.startswith("\\\\?\\"):
+        return value[4:]
+    return value
 
 
-def normalized_key(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+def absolute_path(path: str | os.PathLike[str]) -> str:
+    """Return an absolute path without exposing a Windows device prefix."""
+    return regular_path(os.path.abspath(os.path.expanduser(regular_path(path))))
+
+
+def extended_path(path: str | os.PathLike[str]) -> str:
+    """Return a Windows extended-length path for every physical filesystem call."""
+    value = os.fspath(path)
+    if os.name != "nt" or value.startswith(("\\\\?\\", "\\\\.\\")):
+        return value
+    value = os.path.abspath(value)
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def normalized_key(path: str | os.PathLike[str]) -> str:
+    return os.path.normcase(absolute_path(path))
 
 
 def split_archive_path(name: str) -> tuple[str, ...]:
@@ -486,11 +507,19 @@ def archive_row(
 
 def make_temp_path(temp_dir: str, logical_name: str) -> str:
     suffix = ntpath.splitext(logical_name)[1]
-    if not suffix or len(suffix) > 16:
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,15}", suffix):
         suffix = ".bin"
     descriptor, path = tempfile.mkstemp(prefix="member-", suffix=suffix, dir=temp_dir)
     os.close(descriptor)
     return path
+
+
+def archive_temp_directory():
+    """Create a short-name archive workspace in the OS temp directory."""
+    return tempfile.TemporaryDirectory(
+        prefix="folder-review-",
+        dir=extended_path(tempfile.gettempdir()),
+    )
 
 
 def raw_archive_type(data: bytes) -> str | None:
@@ -936,7 +965,7 @@ def process_file(item: PhysicalFile) -> list[ResultRow]:
     if file_type in ARCHIVE_TYPES:
         with (
             HEAVY_ARCHIVE_SLOTS,
-            tempfile.TemporaryDirectory(prefix="folder-review-") as temp_dir,
+            archive_temp_directory() as temp_dir,
         ):
             node = ArchiveNode(
                 item.path,
@@ -1013,8 +1042,8 @@ def excel_text(value: str | None) -> str | None:
     if value is None:
         return None
     text = ILLEGAL_CHARACTERS_RE.sub("�", str(value))
-    if len(text) > 32_767:
-        text = text[:32_766] + "…"
+    if len(text) > EXCEL_MAX_TEXT_LENGTH:
+        text = text[: EXCEL_MAX_TEXT_LENGTH - 1] + "…"
     return text
 
 
@@ -1271,13 +1300,22 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
     ws.sheet_view.selection[0].activeCell = "B6"
     ws.sheet_view.selection[0].sqref = "B6"
 
-    temporary = output_path.with_name(f".{output_path.stem}.tmp.xlsx")
+    output_name = absolute_path(output_path)
+    output_folder = os.path.dirname(output_name)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".folder-review-",
+        suffix=".tmp.xlsx",
+        dir=extended_path(output_folder),
+    )
+    os.close(descriptor)
     try:
         wb.save(temporary)
-        os.replace(temporary, output_path)
+        os.replace(temporary, extended_path(output_name))
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 # Command-line entry point ---------------------------------------------------
@@ -1313,25 +1351,28 @@ def parse_args() -> argparse.Namespace:
 def run() -> int:
     validate_platform()
     args = parse_args()
-    script_dir = Path(__file__).resolve().parent
+    script_dir = Path(os.path.dirname(absolute_path(__file__)))
 
-    root_folder = os.path.normpath((args.root or ROOT_FOLDER).strip().strip('"'))
+    configured_root = (args.root or ROOT_FOLDER).strip().strip('"')
     if (
         not args.root
-        and root_folder == ROOT_FOLDER
+        and configured_root == ROOT_FOLDER
         and ROOT_FOLDER == r"PASTE_FOLDER_PATH_HERE"
     ):
         raise ValueError(
             "Edit ROOT_FOLDER near the top of folder_review.py before running."
         )
+    root_folder = absolute_path(os.path.normpath(configured_root))
     if not os.path.isdir(extended_path(root_folder)):
         raise ValueError(f"Folder is unavailable: {root_folder}")
 
-    output_path = (
-        Path(args.output).resolve() if args.output else script_dir / OUTPUT_FILE
+    output_path = Path(
+        absolute_path(args.output) if args.output else str(script_dir / OUTPUT_FILE)
     )
     if output_path.suffix.lower() != ".xlsx":
         raise ValueError("Output file must use the .xlsx extension.")
+    if not os.path.isdir(extended_path(output_path.parent)):
+        raise ValueError(f"Output folder is unavailable: {output_path.parent}")
 
     configure_rar_backend()
     started = time.monotonic()

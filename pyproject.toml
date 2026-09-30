@@ -1,6 +1,6 @@
 [project]
 name = "folder-review"
-version = "0.2.0"
+version = "0.3.0"
 description = "Create a recursive XLSX inventory of a folder and its nested archives."
 readme = "README.md"
 requires-python = ">=3.11"
