@@ -98,6 +98,7 @@ class FolderReviewTests(unittest.TestCase):
         bom_row = next(row for row in rows if row.leaf_name == "bom.txt")
         self.assertEqual(workbook_row.content_type, "Excel workbook (XLSX)")
         self.assertEqual(bom_row.bom, "UTF-16 LE")
+        self.assertEqual(bom_row.item_type, "Файл внутри архива")
         self.assertIsNone(bom_row.properties)
         self.assertFalse(
             any(row.leaf_name in {"middle.7z", "inner.zip"} for row in rows)
@@ -207,17 +208,38 @@ class FolderReviewTests(unittest.TestCase):
                 "Имя файла",
                 "Расширение",
                 "Полное имя файла",
+                "Тип элемента",
+                "Тип ссылки",
+                "Цель ссылки",
+                "Права доступа",
                 "Скрытый",
+                "Только чтение",
+                "Исполняемый",
+                "Системный (Windows)",
+                "Архивный (Windows)",
+                "Временный (Windows)",
+                "Автономный (Windows)",
+                "Сжатый (Windows)",
+                "Зашифрованный (Windows)",
+                "Разреженный (Windows)",
+                "Не индексировать содержимое (Windows)",
+                "Атрибуты файла (Windows)",
+                "st_file_attributes",
+                "st_reparse_tag",
                 "st_mode",
                 "st_ino",
                 "st_dev",
+                "st_rdev",
                 "st_nlink",
                 "st_uid (User ID of the owner)",
                 "st_gid (Group ID of the owner)",
+                "st_blksize",
+                "st_blocks",
                 "Размер файла в мб",
                 "Время последнего обращения к файлу",
                 "Время последнего изменения файла",
                 "Время создания файла",
+                "Время изменения метаданных",
                 "BOM",
             }
             self.assertTrue(requested_headers.issubset(columns))
@@ -226,7 +248,11 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual(values[columns["Тип по содержимому"]], "PDF")
             self.assertEqual(values[columns["В архиве"]], "нет")
             self.assertEqual(values[columns["BOM"]], "нет")
+            self.assertEqual(values[columns["Тип элемента"]], "Файл")
             self.assertEqual(values[columns["Скрытый"]], "нет")
+            self.assertEqual(
+                values[columns["Права доступа"]], properties.permissions
+            )
             self.assertEqual(values[columns["st_mode"]], properties.mode)
             self.assertEqual(values[columns["st_ino"]], properties.inode)
             self.assertIsNotNone(values[columns["Время последнего изменения файла"]])
@@ -245,7 +271,78 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(rows[0].bom, "UTF-8")
         self.assertEqual(rows[0].content_type, "Text (UTF-8 BOM)")
         self.assertIsNotNone(rows[0].properties)
+        self.assertEqual(rows[0].item_type, "Файл")
+        self.assertIsNone(rows[0].link_type)
         self.assertEqual(rows[0].properties.mode, source.stat().st_mode)
+        self.assertTrue(rows[0].properties.permissions.startswith("-"))
+        if os.name == "nt":
+            self.assertIsNotNone(rows[0].properties.file_attributes_value)
+            self.assertIsNone(rows[0].properties.metadata_changed_at)
+        else:
+            self.assertIsNone(rows[0].properties.file_attributes_value)
+            self.assertIsNotNone(rows[0].properties.metadata_changed_at)
+
+    def test_links_and_special_items_are_reported_without_following(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX link and FIFO behavior")
+
+        target_file = self.root / "target.txt"
+        target_file.write_text("target", encoding="utf-8")
+        target_folder = self.root / "target-folder"
+        target_folder.mkdir()
+        (target_folder / "inside.txt").write_text("inside", encoding="utf-8")
+        file_link = self.root / "file-link"
+        folder_link = self.root / "folder-link"
+        file_link.symlink_to(target_file.name)
+        folder_link.symlink_to(target_folder.name, target_is_directory=True)
+        fifo = self.root / "events.fifo"
+        os.mkfifo(fifo)
+
+        files, stats = folder_review.scan_tree(str(self.root), set(), workers=2)
+        rows = folder_review.inspect_files(files, workers=2)
+        by_name = {row.leaf_name: row for row in rows}
+
+        self.assertEqual(stats.skipped_entries, 0)
+        self.assertEqual(by_name["file-link"].item_type, "Символическая ссылка")
+        self.assertEqual(by_name["file-link"].link_type, "Символическая ссылка")
+        self.assertEqual(by_name["file-link"].link_target, target_file.name)
+        self.assertEqual(
+            by_name["folder-link"].content_type,
+            "Filesystem link (not followed)",
+        )
+        self.assertEqual(by_name["events.fifo"].item_type, "Именованный канал (FIFO)")
+        self.assertEqual(
+            by_name["events.fifo"].content_type,
+            "Special filesystem item (not read)",
+        )
+        self.assertEqual(sum(row.leaf_name == "inside.txt" for row in rows), 1)
+
+    def test_hard_links_are_marked(self) -> None:
+        source = self.root / "source.txt"
+        hard_link = self.root / "hard-link.txt"
+        source.write_text("same data", encoding="utf-8")
+        try:
+            os.link(source, hard_link)
+        except OSError as exc:
+            self.skipTest(f"Hard links are unavailable: {exc}")
+
+        files, _ = folder_review.scan_tree(str(self.root), set(), workers=2)
+        rows = folder_review.inspect_files(files, workers=2)
+
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row.link_type == "Жесткая ссылка" for row in rows))
+        self.assertTrue(all(row.properties.links == 2 for row in rows))
+
+    def test_windows_attribute_names(self) -> None:
+        self.assertEqual(
+            folder_review.windows_attribute_names(0x00000001 | 0x00000020),
+            "READONLY | ARCHIVE",
+        )
+        self.assertEqual(
+            folder_review.windows_attribute_names(0x01000000),
+            "UNKNOWN_0x01000000",
+        )
+        self.assertIsNone(folder_review.windows_attribute_names(None))
 
     def test_all_supported_bom_variants(self) -> None:
         cases = {

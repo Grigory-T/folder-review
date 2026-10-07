@@ -101,21 +101,65 @@ BOM_SIGNATURES = (
 )
 BOM_NOT_PRESENT = "нет"
 
+YES = "да"
+NO = "нет"
+
+WINDOWS_FILE_ATTRIBUTES = (
+    (0x00000001, "READONLY"),
+    (0x00000002, "HIDDEN"),
+    (0x00000004, "SYSTEM"),
+    (0x00000010, "DIRECTORY"),
+    (0x00000020, "ARCHIVE"),
+    (0x00000040, "DEVICE"),
+    (0x00000080, "NORMAL"),
+    (0x00000100, "TEMPORARY"),
+    (0x00000200, "SPARSE_FILE"),
+    (0x00000400, "REPARSE_POINT"),
+    (0x00000800, "COMPRESSED"),
+    (0x00001000, "OFFLINE"),
+    (0x00002000, "NOT_CONTENT_INDEXED"),
+    (0x00004000, "ENCRYPTED"),
+    (0x00008000, "INTEGRITY_STREAM"),
+    (0x00020000, "NO_SCRUB_DATA"),
+    (0x00040000, "RECALL_ON_OPEN"),
+    (0x00080000, "PINNED"),
+    (0x00100000, "UNPINNED"),
+    (0x00400000, "RECALL_ON_DATA_ACCESS"),
+)
+
 
 # Data models ----------------------------------------------------------------
 
 
 @dataclass(slots=True, frozen=True)
 class FileProperties:
+    permissions: str
     hidden: str
+    read_only: str
+    executable: str
+    system: str | None
+    archive_attribute: str | None
+    temporary: str | None
+    offline: str | None
+    compressed: str | None
+    encrypted: str | None
+    sparse: str | None
+    not_content_indexed: str | None
+    file_attributes: str | None
+    file_attributes_value: int | None
+    reparse_tag: str | None
     mode: int
     inode: str
     device: str
+    device_type: str | None
     links: int
     user_id: str | None
     group_id: str | None
+    block_size: int | None
+    blocks: int | None
     accessed_at: datetime | None
     modified_at: datetime | None
+    metadata_changed_at: datetime | None
     created_at: datetime | None
 
 
@@ -125,6 +169,10 @@ class PhysicalFile:
     levels: tuple[str, ...]
     size: int
     properties: FileProperties | None = None
+    item_type: str = "Файл"
+    link_type: str | None = None
+    link_target: str | None = None
+    inspect_content: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -144,6 +192,9 @@ class ResultRow:
     leaf_name: str
     extension: str
     size: int
+    item_type: str
+    link_type: str | None
+    link_target: str | None
     content_type: str
     in_archive: str
     bom: str | None = None
@@ -215,12 +266,54 @@ def timestamp_value(value: float | None) -> datetime | None:
         return None
 
 
+def yes_no(value: bool) -> str:
+    return YES if value else NO
+
+
+def attribute_flag(attributes: int | None, mask: int) -> str | None:
+    if attributes is None:
+        return None
+    return yes_no(bool(attributes & mask))
+
+
+def windows_attribute_names(attributes: int | None) -> str | None:
+    if attributes is None:
+        return None
+    names = [name for mask, name in WINDOWS_FILE_ATTRIBUTES if attributes & mask]
+    known_mask = sum(mask for mask, _ in WINDOWS_FILE_ATTRIBUTES)
+    unknown = attributes & ~known_mask
+    if unknown:
+        names.append(f"UNKNOWN_0x{unknown:08X}")
+    return " | ".join(names) if names else "0"
+
+
+def item_type_from_mode(mode: int) -> str:
+    if stat.S_ISREG(mode):
+        return "Файл"
+    if stat.S_ISDIR(mode):
+        return "Папка"
+    if stat.S_ISLNK(mode):
+        return "Символическая ссылка"
+    if stat.S_ISFIFO(mode):
+        return "Именованный канал (FIFO)"
+    if stat.S_ISSOCK(mode):
+        return "Сокет"
+    if stat.S_ISCHR(mode):
+        return "Символьное устройство"
+    if stat.S_ISBLK(mode):
+        return "Блочное устройство"
+    return "Другой объект файловой системы"
+
+
 def file_properties(name: str, result: os.stat_result) -> FileProperties:
-    if os.name == "nt":
-        hidden_mask = getattr(stat, "FILE_ATTRIBUTE_HIDDEN", 0x2)
-        hidden = bool(getattr(result, "st_file_attributes", 0) & hidden_mask)
+    attributes = getattr(result, "st_file_attributes", None)
+    if attributes is not None:
+        hidden = bool(attributes & 0x00000002)
+        read_only = bool(attributes & 0x00000001)
     else:
         hidden = name.startswith(".")
+        write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+        read_only = not bool(result.st_mode & write_bits)
 
     created_timestamp = getattr(result, "st_birthtime", None)
     if created_timestamp is None and os.name == "nt":
@@ -228,16 +321,41 @@ def file_properties(name: str, result: os.stat_result) -> FileProperties:
 
     user_id = getattr(result, "st_uid", None)
     group_id = getattr(result, "st_gid", None)
+    device_type = getattr(result, "st_rdev", None)
+    block_size = getattr(result, "st_blksize", None)
+    blocks = getattr(result, "st_blocks", None)
+    reparse_tag = getattr(result, "st_reparse_tag", None)
+    execute_bits = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
     return FileProperties(
-        hidden="да" if hidden else "нет",
+        permissions=stat.filemode(result.st_mode),
+        hidden=yes_no(hidden),
+        read_only=yes_no(read_only),
+        executable=yes_no(bool(result.st_mode & execute_bits)),
+        system=attribute_flag(attributes, 0x00000004),
+        archive_attribute=attribute_flag(attributes, 0x00000020),
+        temporary=attribute_flag(attributes, 0x00000100),
+        offline=attribute_flag(attributes, 0x00001000),
+        compressed=attribute_flag(attributes, 0x00000800),
+        encrypted=attribute_flag(attributes, 0x00004000),
+        sparse=attribute_flag(attributes, 0x00000200),
+        not_content_indexed=attribute_flag(attributes, 0x00002000),
+        file_attributes=windows_attribute_names(attributes),
+        file_attributes_value=attributes,
+        reparse_tag=None if reparse_tag is None else f"0x{reparse_tag:08X}",
         mode=result.st_mode,
         inode=str(result.st_ino),
         device=str(result.st_dev),
+        device_type=None if device_type is None else str(device_type),
         links=result.st_nlink,
         user_id=None if user_id is None else str(user_id),
         group_id=None if group_id is None else str(group_id),
+        block_size=block_size,
+        blocks=blocks,
         accessed_at=timestamp_value(result.st_atime),
         modified_at=timestamp_value(result.st_mtime),
+        metadata_changed_at=(
+            None if os.name == "nt" else timestamp_value(result.st_ctime)
+        ),
         created_at=timestamp_value(created_timestamp),
     )
 
@@ -252,6 +370,9 @@ def make_row(
     *,
     bom: str | None = None,
     properties: FileProperties | None = None,
+    item_type: str | None = None,
+    link_type: str | None = None,
+    link_target: str | None = None,
 ) -> ResultRow:
     leaf_name = levels[-1]
     return ResultRow(
@@ -260,6 +381,9 @@ def make_row(
         leaf_name=leaf_name,
         extension=extension_of(leaf_name),
         size=size,
+        item_type=item_type or ("Файл" if properties else "Файл внутри архива"),
+        link_type=link_type,
+        link_target=link_target,
         content_type=content_type,
         in_archive="да" if in_archive else "нет",
         bom=bom,
@@ -409,6 +533,13 @@ def detect_file_type(file_path: str) -> str:
 # Physical folder scan -------------------------------------------------------
 
 
+def link_target(path: str) -> str | None:
+    try:
+        return regular_path(os.readlink(extended_path(path)))
+    except (OSError, ValueError):
+        return None
+
+
 def scan_folder(
     folder_path: str,
     levels: tuple[str, ...],
@@ -423,18 +554,63 @@ def scan_folder(
             for entry in entries:
                 try:
                     logical_path = os.path.join(folder_path, entry.name)
-                    if entry.is_dir(follow_symlinks=False):
-                        subfolders.append((logical_path, levels + (entry.name,)))
-                    elif entry.is_file(follow_symlinks=False):
-                        if normalized_key(logical_path) in excluded_paths:
-                            continue
-                        stat_result = entry.stat(follow_symlinks=False)
+                    if normalized_key(logical_path) in excluded_paths:
+                        continue
+
+                    stat_result = entry.stat(follow_symlinks=False)
+                    mode = stat_result.st_mode
+                    properties = file_properties(entry.name, stat_result)
+                    attributes = getattr(stat_result, "st_file_attributes", None)
+                    is_reparse = bool(
+                        attributes is not None and attributes & 0x00000400
+                    )
+                    is_junction_method = getattr(entry, "is_junction", None)
+                    is_junction = bool(
+                        is_junction_method is not None and is_junction_method()
+                    )
+                    is_symbolic_link = entry.is_symlink() or stat.S_ISLNK(mode)
+
+                    if is_junction or is_symbolic_link or is_reparse:
+                        if is_junction:
+                            item_type = "Соединение каталогов (junction)"
+                            link_type_value = "Junction"
+                        elif is_symbolic_link:
+                            item_type = "Символическая ссылка"
+                            link_type_value = "Символическая ссылка"
+                        else:
+                            item_type = "Точка повторной обработки"
+                            link_type_value = "Reparse point"
                         files.append(
                             PhysicalFile(
                                 logical_path,
                                 levels + (entry.name,),
                                 stat_result.st_size,
-                                file_properties(entry.name, stat_result),
+                                properties,
+                                item_type,
+                                link_type_value,
+                                link_target(logical_path),
+                                False,
+                            )
+                        )
+                    elif stat.S_ISDIR(mode):
+                        subfolders.append((logical_path, levels + (entry.name,)))
+                    else:
+                        item_type = item_type_from_mode(mode)
+                        is_regular = stat.S_ISREG(mode)
+                        files.append(
+                            PhysicalFile(
+                                logical_path,
+                                levels + (entry.name,),
+                                stat_result.st_size,
+                                properties,
+                                item_type,
+                                (
+                                    "Жесткая ссылка"
+                                    if is_regular and stat_result.st_nlink > 1
+                                    else None
+                                ),
+                                None,
+                                is_regular,
                             )
                         )
                 except OSError:
@@ -961,6 +1137,25 @@ def process_archive_node(
 
 
 def process_file(item: PhysicalFile) -> list[ResultRow]:
+    if not item.inspect_content:
+        if item.link_type is not None:
+            content_type = "Filesystem link (not followed)"
+        else:
+            content_type = "Special filesystem item (not read)"
+        return [
+            make_row(
+                item.path,
+                item.levels,
+                item.size,
+                content_type,
+                False,
+                properties=item.properties,
+                item_type=item.item_type,
+                link_type=item.link_type,
+                link_target=item.link_target,
+            )
+        ]
+
     file_type, bom = inspect_file(item.path)
     if file_type in ARCHIVE_TYPES:
         with (
@@ -992,6 +1187,9 @@ def process_file(item: PhysicalFile) -> list[ResultRow]:
             error,
             bom=bom,
             properties=item.properties,
+            item_type=item.item_type,
+            link_type=item.link_type,
+            link_target=item.link_target,
         )
     ]
 
@@ -1088,18 +1286,39 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         "Имя файла",
         "Расширение",
         "Полное имя файла",
+        "Тип элемента",
+        "Тип ссылки",
+        "Цель ссылки",
+        "Права доступа",
         "Скрытый",
+        "Только чтение",
+        "Исполняемый",
+        "Системный (Windows)",
+        "Архивный (Windows)",
+        "Временный (Windows)",
+        "Автономный (Windows)",
+        "Сжатый (Windows)",
+        "Зашифрованный (Windows)",
+        "Разреженный (Windows)",
+        "Не индексировать содержимое (Windows)",
+        "Атрибуты файла (Windows)",
+        "st_file_attributes",
+        "st_reparse_tag",
         "st_mode",
         "st_ino",
         "st_dev",
+        "st_rdev",
         "st_nlink",
         "st_uid (User ID of the owner)",
         "st_gid (Group ID of the owner)",
+        "st_blksize",
+        "st_blocks",
         "Размер файла в мб",
         "Размер файла, байт",
         "Время последнего обращения к файлу",
         "Время последнего изменения файла",
         "Время создания файла",
+        "Время изменения метаданных",
         "BOM",
         "Тип по содержимому",
         "В архиве",
@@ -1158,11 +1377,17 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         "Полный путь к файлу": 42,
         "Имя файла": 20,
         "Полное имя файла": 24,
+        "Тип элемента": 24,
+        "Тип ссылки": 20,
+        "Цель ссылки": 32,
+        "Права доступа": 16,
+        "Атрибуты файла (Windows)": 32,
         "st_uid (User ID of the owner)": 17,
         "st_gid (Group ID of the owner)": 17,
         "Время последнего обращения к файлу": 20,
         "Время последнего изменения файла": 20,
         "Время создания файла": 20,
+        "Время изменения метаданных": 20,
         "Тип по содержимому": 24,
         "Ошибка": 20,
     }
@@ -1215,13 +1440,31 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
     centered_headers = {
         "Уровень листа",
         "Расширение",
+        "Тип элемента",
+        "Тип ссылки",
+        "Права доступа",
         "Скрытый",
+        "Только чтение",
+        "Исполняемый",
+        "Системный (Windows)",
+        "Архивный (Windows)",
+        "Временный (Windows)",
+        "Автономный (Windows)",
+        "Сжатый (Windows)",
+        "Зашифрованный (Windows)",
+        "Разреженный (Windows)",
+        "Не индексировать содержимое (Windows)",
+        "st_file_attributes",
+        "st_reparse_tag",
         "st_mode",
         "st_ino",
         "st_dev",
+        "st_rdev",
         "st_nlink",
         "st_uid (User ID of the owner)",
         "st_gid (Group ID of the owner)",
+        "st_blksize",
+        "st_blocks",
         "BOM",
         "В архиве",
     }
@@ -1231,6 +1474,7 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         "Время последнего обращения к файлу": "yyyy-mm-dd hh:mm:ss",
         "Время последнего изменения файла": "yyyy-mm-dd hh:mm:ss",
         "Время создания файла": "yyyy-mm-dd hh:mm:ss",
+        "Время изменения метаданных": "yyyy-mm-dd hh:mm:ss",
     }
     for row in rows:
         properties = row.properties
@@ -1245,18 +1489,39 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
             stem_name,
             row.extension,
             row.leaf_name,
+            row.item_type,
+            row.link_type,
+            row.link_target,
+            properties.permissions if properties else None,
             properties.hidden if properties else None,
+            properties.read_only if properties else None,
+            properties.executable if properties else None,
+            properties.system if properties else None,
+            properties.archive_attribute if properties else None,
+            properties.temporary if properties else None,
+            properties.offline if properties else None,
+            properties.compressed if properties else None,
+            properties.encrypted if properties else None,
+            properties.sparse if properties else None,
+            properties.not_content_indexed if properties else None,
+            properties.file_attributes if properties else None,
+            properties.file_attributes_value if properties else None,
+            properties.reparse_tag if properties else None,
             properties.mode if properties else None,
             properties.inode if properties else None,
             properties.device if properties else None,
+            properties.device_type if properties else None,
             properties.links if properties else None,
             properties.user_id if properties else None,
             properties.group_id if properties else None,
+            properties.block_size if properties else None,
+            properties.blocks if properties else None,
             row.size / (1024 * 1024),
             row.size,
             properties.accessed_at if properties else None,
             properties.modified_at if properties else None,
             properties.created_at if properties else None,
+            properties.metadata_changed_at if properties else None,
             row.bom,
             row.content_type,
             row.in_archive,

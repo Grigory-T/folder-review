@@ -1,7 +1,7 @@
 # Folder Review
 
 Folder Review creates one flat Excel inventory for a selected folder. It scans
-ordinary files and recursively opens ZIP, 7z, and RAR archives in any nesting
+filesystem items and recursively opens ZIP, 7z, and RAR archives in any nesting
 order. Archive names and internal folders remain visible as hierarchy levels in
 the output.
 
@@ -37,7 +37,8 @@ The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
 - ZIP, 7z, and RAR archives can contain folders and more supported archives in
   any order.
 - DOCX, XLSX, PPTX, EPUB, and JAR ZIP containers remain single logical files.
-- Directory links are not followed.
+- Symbolic links, junctions, reparse points, and special filesystem items are
+  reported as rows but are not followed or opened.
 - Local folders, mapped network drives, and Windows UNC paths are supported.
 - Folder enumeration and file inspection use 16 workers by default. Archive
   extraction is capped separately to avoid excessive memory use.
@@ -65,12 +66,21 @@ normally cannot exceed 255 characters. Excel cells are limited to 32,767
 characters, so only a still-longer logical path created by archive nesting may
 need to be shortened in the workbook.
 
-Physical files include Windows/Python filesystem properties: hidden status,
-`st_mode`, `st_ino`, `st_dev`, `st_nlink`, `st_uid`, `st_gid`, size, access
-time, modification time, and creation time when the operating system provides
-it. Archive members are logical files rather than OS filesystem objects, so
-their OS-only fields remain blank. Their size, type, hierarchy, and BOM are
-still reported.
+Physical items include a readable item type, link type and target, permissions,
+hidden/read-only/executable flags, `st_mode`, `st_ino`, `st_dev`, `st_rdev`,
+`st_nlink`, `st_uid`, `st_gid`, `st_blksize`, `st_blocks`, size, access time,
+modification time, creation time when available, and metadata-change time on
+Linux. Regular files with more than one filesystem link are marked as hard
+links.
+
+On Windows the workbook also includes the numeric and readable file-attribute
+set, reparse tag, and separate system, archive, temporary, offline, compressed,
+encrypted, sparse, and content-indexing flags. These fields use metadata already
+returned by the operating system; the tool does not enumerate ACLs or alternate
+data streams. Archive members are logical files rather than OS filesystem
+objects, so their OS-only fields remain blank and their item type is
+`Файл внутри архива`. Their size, content type, hierarchy, and BOM are still
+reported.
 
 BOM detection is independent from file-type detection and recognizes UTF-8,
 UTF-16 LE/BE, and UTF-32 LE/BE markers.
@@ -78,7 +88,7 @@ UTF-16 LE/BE, and UTF-32 LE/BE markers.
 For one-off automation, the configured path can be overridden:
 
 ```powershell
-.\RUN.bat --root "D:\Data" --output ".\data-review.xlsx" --workers 16
+.\RUN.bat --root "\\server\share\folder" --workers 32
 ```
 
 On Linux, use the same configured `ROOT_FOLDER` or pass `--root`:
