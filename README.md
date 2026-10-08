@@ -43,7 +43,8 @@ The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
 - Folder enumeration and file inspection use 16 workers by default. Archive
   extraction is capped separately to avoid excessive memory use.
 - Archive members are read to completion. ZIP CRC and backend-provided 7z/RAR
-  integrity failures are reported in `Проверка целостности` and `Ошибка`.
+  integrity failures are reported in `Проверка целостности` and `Ошибка`, even
+  when a backend reports the failure only after delivering every member byte.
 - Empty, encrypted, damaged, unsupported, or safety-limited archive members are
   retained as rows with errors whenever their names are readable.
 - Nested archives use temporary local storage and are removed after inspection.
@@ -64,7 +65,9 @@ six hours of archive-inspection time, the Excel logical-row limit, 20 nesting
 levels, and four concurrently expanded archives. Limits can be changed with
 `--max-expanded-gib`, `--max-archive-seconds`, and `--max-rows`; use `0` for an
 unlimited byte or time budget. Reaching a limit produces a partial workbook
-instead of silent omission.
+instead of silent omission. If physical items alone exceed `--max-rows`, the
+first path-sorted items that fit are inventoried and the omitted count is
+recorded in `scan_status`.
 
 ## Long paths and temporary files
 

@@ -190,6 +190,30 @@ class FolderReviewTests(unittest.TestCase):
         self.assertIn("BadZipFile", rows[0].error)
         self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
 
+    def test_bad_7z_crc_is_reported_after_all_bytes_are_captured(self) -> None:
+        archive_path = self.root / "bad-crc.7z"
+        with py7zr.SevenZipFile(
+            archive_path,
+            "w",
+            filters=[{"id": py7zr.FILTER_COPY}],
+        ) as archive:
+            archive.set_encoded_header_mode(False)
+            archive.writestr(b"A" * 65_536, "payload.txt")
+
+        data = bytearray(archive_path.read_bytes())
+        self.assertEqual(data[32], ord("A"), "Unexpected stored 7z layout")
+        data[32] = ord("B")
+        archive_path.write_bytes(data)
+
+        rows = self.inspect(archive_path)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].leaf_name, "payload.txt")
+        self.assertEqual(rows[0].content_type, "Text (UTF-8 / ASCII)")
+        self.assertIsNotNone(rows[0].error)
+        self.assertIn("CrcError", rows[0].error)
+        self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
+
     def test_encrypted_7z_preserves_known_member_names(self) -> None:
         archive_path = self.root / "encrypted.7z"
         with py7zr.SevenZipFile(
@@ -583,6 +607,59 @@ class FolderReviewTests(unittest.TestCase):
                     and row[1] == str(self.root / "unavailable")
                     and "PermissionError" in row[2]
                     for row in values
+                )
+            )
+        finally:
+            workbook.close()
+
+    def test_physical_row_limit_writes_partial_workbook(self) -> None:
+        for number in range(3):
+            (self.root / f"file-{number}.txt").write_text(
+                "plain text",
+                encoding="utf-8",
+            )
+        output = self.root / "row-limit.xlsx"
+        with (
+            mock.patch.object(
+                folder_review.sys,
+                "argv",
+                [
+                    "folder_review.py",
+                    "--root",
+                    str(self.root),
+                    "--output",
+                    str(output),
+                    "--max-rows",
+                    "2",
+                ],
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            exit_code = folder_review.run()
+
+        self.assertEqual(exit_code, 2)
+        self.assertTrue(output.is_file())
+        workbook = load_workbook(output, read_only=True, data_only=True)
+        try:
+            inventory = workbook["folder_review"]
+            self.assertEqual(
+                sum(1 for _ in inventory.iter_rows(min_row=7, values_only=True)),
+                2,
+            )
+            status_values = list(
+                workbook["scan_status"].iter_rows(values_only=True)
+            )
+            self.assertIn(("Статус", "PARTIAL"), status_values)
+            self.assertIn(("Физические элементы", 3), status_values)
+            self.assertIn(("Логические строки", 2), status_values)
+            self.assertTrue(
+                any(
+                    len(row) >= 3
+                    and row[0] == "row limit"
+                    and row[1] == str(self.root)
+                    and "1 physical items omitted" in row[2]
+                    for row in status_values
                 )
             )
         finally:

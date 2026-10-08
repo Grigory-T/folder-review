@@ -1185,7 +1185,7 @@ def expand_7z(
 ) -> list[ResultRow]:
     infos = []
     factory = None
-    extraction_error = None
+    extraction_exception: Exception | None = None
     try:
         with py7zr.SevenZipFile(extended_path(node.source_path), mode="r") as archive:
             infos = [info for info in archive.list() if not info.is_directory]
@@ -1212,7 +1212,7 @@ def expand_7z(
             try:
                 archive.extractall(factory=factory)
             except Exception as exc:
-                extraction_error = exception_text(exc)
+                extraction_exception = exc
             finally:
                 factory.close_all()
     except Exception as exc:
@@ -1231,18 +1231,43 @@ def expand_7z(
         logical_path = node.logical_path + "::" + "\\".join(parts)
         size = info.uncompressed or 0
         product = factory.products.get(info.filename)
-        complete = bool(product is not None and product.total_written >= size)
+        if extraction_exception is not None:
+            extraction_error = exception_text(extraction_exception)
+            integrity_status = (
+                INTEGRITY_NOT_VERIFIED
+                if isinstance(
+                    extraction_exception,
+                    (BudgetExceeded, py7zr.exceptions.PasswordRequired),
+                )
+                else INTEGRITY_ERROR
+            )
+            if product is not None and product.temp_path is not None:
+                try:
+                    os.unlink(product.temp_path)
+                except OSError:
+                    pass
 
-        if extraction_error is not None and not complete:
+            if size == 0:
+                content_type = "Empty file"
+                bom = BOM_NOT_PRESENT
+            elif product is not None and product.head:
+                content_type = product.archive_type or detect_magic(
+                    bytes(product.head)
+                )
+                bom = detect_bom(bytes(product.head)) or BOM_NOT_PRESENT
+            else:
+                content_type = "Not inspected"
+                bom = None
             rows.append(
                 make_row(
                     logical_path,
                     levels,
                     size,
-                    "Not inspected",
+                    content_type,
                     True,
                     extraction_error,
-                    integrity_status=INTEGRITY_NOT_VERIFIED,
+                    bom=bom,
+                    integrity_status=integrity_status,
                 )
             )
         elif size == 0:
@@ -1562,6 +1587,32 @@ def inspect_files(
 
     rows.sort(key=lambda row: row.full_path.casefold())
     return rows
+
+
+def apply_physical_row_limit(
+    physical_files: list[PhysicalFile],
+    max_rows: int,
+    stats: ScanStats,
+    root_folder: str,
+) -> tuple[list[PhysicalFile], int]:
+    """Select a deterministic physical subset that can fit the logical-row budget."""
+    total = len(physical_files)
+    omitted = max(total - max_rows, 0)
+    if omitted == 0:
+        return physical_files, total
+
+    stats.skipped_entries += omitted
+    stats.diagnostics.append(
+        Diagnostic(
+            root_folder,
+            "row limit",
+            (
+                f"{omitted:,} physical items omitted because the logical-row "
+                f"budget is {max_rows:,} rows"
+            ),
+        )
+    )
+    return physical_files[:max_rows], total
 
 
 # Excel output ---------------------------------------------------------------
@@ -2248,6 +2299,17 @@ def run() -> int:
         args.workers,
     )
     print(f"Physical items found: {len(physical_files):,}")
+    physical_files, physical_items_found = apply_physical_row_limit(
+        physical_files,
+        args.max_rows,
+        stats,
+        root_folder,
+    )
+    if len(physical_files) < physical_items_found:
+        print(
+            f"Physical items selected for inspection: {len(physical_files):,} "
+            f"({physical_items_found - len(physical_files):,} omitted by row limit)"
+        )
 
     max_expanded_bytes = (
         None
@@ -2281,7 +2343,7 @@ def run() -> int:
         started_at=started_at,
         completed_at=local_now(),
         workers=args.workers,
-        physical_items=len(physical_files),
+        physical_items=physical_items_found,
         logical_rows=len(rows),
         row_errors=errors,
         stats=stats,
