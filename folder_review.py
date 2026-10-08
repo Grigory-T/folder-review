@@ -9,17 +9,17 @@ import argparse
 import ntpath
 import os
 import re
-import shutil
 import stat
 import sys
 import tempfile
 import time
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from itertools import chain, islice
 from pathlib import Path
-from threading import Semaphore
+from threading import Lock, Semaphore
 
 import olefile
 import py7zr
@@ -46,6 +46,8 @@ MAX_CONCURRENT_ARCHIVES = 4
 MAGIC_READ_SIZE = 8 * 1024
 MAX_ARCHIVE_DEPTH = 20
 MAX_NESTED_ARCHIVE_SIZE = 50 * 1024 * 1024 * 1024
+DEFAULT_MAX_EXPANDED_BYTES = 100 * 1024 * 1024 * 1024
+DEFAULT_MAX_ARCHIVE_SECONDS = 6 * 60 * 60
 SEVEN_ZIP_INSPECT_MAX_MEMBERS = 25_000
 EXCEL_MAX_DATA_ROWS = 1_048_570  # rows 7..1,048,576
 EXCEL_MAX_TEXT_LENGTH = 32_767
@@ -100,6 +102,9 @@ BOM_SIGNATURES = (
     (b"\xfe\xff", "UTF-16 BE"),
 )
 BOM_NOT_PRESENT = "нет"
+INTEGRITY_VERIFIED = "проверена"
+INTEGRITY_NOT_VERIFIED = "не проверена"
+INTEGRITY_ERROR = "ошибка"
 
 YES = "да"
 NO = "нет"
@@ -198,8 +203,16 @@ class ResultRow:
     content_type: str
     in_archive: str
     bom: str | None = None
+    integrity_status: str | None = None
     properties: FileProperties | None = None
     error: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class Diagnostic:
+    path: str
+    stage: str
+    error: str
 
 
 @dataclass(slots=True)
@@ -207,6 +220,85 @@ class ScanStats:
     folders: int = 0
     skipped_folders: int = 0
     skipped_entries: int = 0
+    diagnostics: list[Diagnostic] = field(default_factory=list)
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class WorkBudget:
+    max_expanded_bytes: int | None = DEFAULT_MAX_EXPANDED_BYTES
+    max_rows: int = EXCEL_MAX_DATA_ROWS
+    deadline: float | None = None
+    expanded_bytes: int = 0
+    rows_claimed: int = 0
+    _lock: Lock = field(default_factory=Lock, repr=False)
+
+    def check_time(self) -> None:
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            raise BudgetExceeded("Archive inspection time budget exceeded")
+
+    def consume_expanded(self, amount: int) -> None:
+        if amount <= 0:
+            self.check_time()
+            return
+        with self._lock:
+            self.check_time()
+            total = self.expanded_bytes + amount
+            if self.max_expanded_bytes is not None and total > self.max_expanded_bytes:
+                raise BudgetExceeded(
+                    "Expanded-data budget exceeded "
+                    f"({self.max_expanded_bytes:,} bytes)"
+                )
+            self.expanded_bytes = total
+
+    def ensure_declared_size(self, amount: int) -> None:
+        with self._lock:
+            self.check_time()
+            if (
+                self.max_expanded_bytes is not None
+                and self.expanded_bytes + amount > self.max_expanded_bytes
+            ):
+                raise BudgetExceeded(
+                    "Declared archive content exceeds remaining expanded-data budget"
+                )
+
+    def expand_one_row(self, member_count: int) -> None:
+        additional = max(member_count - 1, 0)
+        with self._lock:
+            self.check_time()
+            total = self.rows_claimed + additional
+            if total > self.max_rows:
+                raise BudgetExceeded(
+                    f"Logical-row budget exceeded ({self.max_rows:,} rows)"
+                )
+            self.rows_claimed = total
+
+    def initialize_rows(self, row_count: int) -> None:
+        with self._lock:
+            if row_count > self.max_rows:
+                raise BudgetExceeded(
+                    f"Logical-row budget exceeded ({self.max_rows:,} rows)"
+                )
+            self.rows_claimed = row_count
+
+
+@dataclass(slots=True, frozen=True)
+class RunReport:
+    status: str
+    started_at: datetime
+    completed_at: datetime
+    workers: int
+    physical_items: int
+    logical_rows: int
+    row_errors: int
+    stats: ScanStats
+    expanded_bytes: int
+    max_expanded_bytes: int | None
+    max_archive_seconds: float | None
+    max_rows: int
 
 
 # Path and row helpers --------------------------------------------------------
@@ -266,6 +358,10 @@ def timestamp_value(value: float | None) -> datetime | None:
         return None
 
 
+def local_now() -> datetime:
+    return datetime.now(tz=UTC).astimezone().replace(tzinfo=None, microsecond=0)
+
+
 def yes_no(value: bool) -> str:
     return YES if value else NO
 
@@ -285,6 +381,16 @@ def windows_attribute_names(attributes: int | None) -> str | None:
     if unknown:
         names.append(f"UNKNOWN_0x{unknown:08X}")
     return " | ".join(names) if names else "0"
+
+
+def exception_text(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if name == "PasswordRequired":
+        return "PasswordRequired: password is required"
+    message = str(exc).strip()
+    if len(message) > 500:
+        message = message[:499] + "…"
+    return f"{name}: {message}" if message else name
 
 
 def item_type_from_mode(mode: int) -> str:
@@ -369,6 +475,7 @@ def make_row(
     error: str | None = None,
     *,
     bom: str | None = None,
+    integrity_status: str | None = None,
     properties: FileProperties | None = None,
     item_type: str | None = None,
     link_type: str | None = None,
@@ -387,6 +494,7 @@ def make_row(
         content_type=content_type,
         in_archive="да" if in_archive else "нет",
         bom=bom,
+        integrity_status=integrity_status,
         properties=properties,
         error=error,
     )
@@ -450,23 +558,26 @@ def detect_magic(data: bytes) -> str:
 
 
 def classify_zip_names(names: list[str]) -> str:
-    normalized = [name.replace("\\", "/").lower() for name in names]
+    normalized = {name.replace("\\", "/").lower() for name in names}
+    package_markers = {"[content_types].xml", "_rels/.rels"}
 
-    if any(name.startswith("word/") for name in normalized):
+    if package_markers <= normalized and "word/document.xml" in normalized:
         return (
             "Word document (DOCM)"
             if "word/vbaproject.bin" in normalized
             else "Word document (DOCX)"
         )
 
-    if any(name.startswith("xl/") for name in normalized):
+    if package_markers <= normalized and (
+        "xl/workbook.xml" in normalized or "xl/workbook.bin" in normalized
+    ):
         if "xl/workbook.bin" in normalized:
             return "Excel binary workbook (XLSB)"
         if "xl/vbaproject.bin" in normalized:
             return "Excel workbook (XLSM)"
         return "Excel workbook (XLSX)"
 
-    if any(name.startswith("ppt/") for name in normalized):
+    if package_markers <= normalized and "ppt/presentation.xml" in normalized:
         return (
             "PowerPoint presentation (PPTM)"
             if "ppt/vbaproject.bin" in normalized
@@ -544,20 +655,31 @@ def scan_folder(
     folder_path: str,
     levels: tuple[str, ...],
     excluded_paths: set[str],
-) -> tuple[list[tuple[str, tuple[str, ...]]], list[PhysicalFile], int, bool]:
+) -> tuple[
+    list[tuple[str, tuple[str, ...]]],
+    list[PhysicalFile],
+    list[Diagnostic],
+    bool,
+]:
     subfolders: list[tuple[str, tuple[str, ...]]] = []
     files: list[PhysicalFile] = []
-    skipped_entries = 0
+    diagnostics: list[Diagnostic] = []
 
     try:
         with os.scandir(extended_path(folder_path)) as entries:
             for entry in entries:
+                logical_path = os.path.join(folder_path, entry.name)
                 try:
-                    logical_path = os.path.join(folder_path, entry.name)
                     if normalized_key(logical_path) in excluded_paths:
                         continue
 
-                    stat_result = entry.stat(follow_symlinks=False)
+                    if os.name == "nt":
+                        stat_result = os.stat(
+                            extended_path(logical_path),
+                            follow_symlinks=False,
+                        )
+                    else:
+                        stat_result = entry.stat(follow_symlinks=False)
                     mode = stat_result.st_mode
                     properties = file_properties(entry.name, stat_result)
                     attributes = getattr(stat_result, "st_file_attributes", None)
@@ -613,12 +735,21 @@ def scan_folder(
                                 is_regular,
                             )
                         )
-                except OSError:
-                    skipped_entries += 1
-    except OSError:
-        return [], [], skipped_entries, True
+                except OSError as exc:
+                    diagnostics.append(
+                        Diagnostic(
+                            logical_path,
+                            "entry metadata",
+                            exception_text(exc),
+                        )
+                    )
+    except OSError as exc:
+        diagnostics.append(
+            Diagnostic(folder_path, "folder enumeration", exception_text(exc))
+        )
+        return subfolders, files, diagnostics, True
 
-    return subfolders, files, skipped_entries, False
+    return subfolders, files, diagnostics, False
 
 
 def scan_tree(
@@ -636,10 +767,14 @@ def scan_tree(
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                subfolders, files, skipped_entries, skipped_folder = future.result()
+                subfolders, files, diagnostics, skipped_folder = future.result()
                 stats.folders += 1
                 stats.skipped_folders += int(skipped_folder)
-                stats.skipped_entries += skipped_entries
+                stats.skipped_entries += sum(
+                    diagnostic.stage == "entry metadata"
+                    for diagnostic in diagnostics
+                )
+                stats.diagnostics.extend(diagnostics)
                 all_files.extend(files)
                 for subfolder_path, levels in subfolders:
                     pending.add(
@@ -668,6 +803,7 @@ def archive_row(
     file_type: str,
     error: str | None = None,
     bom: str | None = None,
+    integrity_status: str | None = None,
 ) -> ResultRow:
     return make_row(
         node.logical_path,
@@ -677,6 +813,10 @@ def archive_row(
         node.depth > 0,
         error,
         bom=bom,
+        integrity_status=(
+            integrity_status
+            or (INTEGRITY_ERROR if error else INTEGRITY_NOT_VERIFIED)
+        ),
         properties=node.properties,
     )
 
@@ -702,6 +842,26 @@ def raw_archive_type(data: bytes) -> str | None:
     return STREAM_ARCHIVE_TYPES.get(detect_magic(data))
 
 
+def read_counted(stream, size: int, budget: WorkBudget) -> bytes:
+    budget.check_time()
+    data = stream.read(size)
+    budget.consume_expanded(len(data))
+    return data
+
+
+def copy_counted(stream, output, budget: WorkBudget) -> None:
+    while True:
+        chunk = read_counted(stream, 1024 * 1024, budget)
+        if not chunk:
+            return
+        output.write(chunk)
+
+
+def drain_counted(stream, budget: WorkBudget) -> None:
+    while read_counted(stream, 1024 * 1024, budget):
+        pass
+
+
 def inspect_member_stream(
     stream,
     *,
@@ -710,9 +870,10 @@ def inspect_member_stream(
     levels: tuple[str, ...],
     parent_depth: int,
     temp_dir: str,
+    budget: WorkBudget,
 ) -> list[ResultRow]:
     try:
-        head = stream.read(MAGIC_READ_SIZE)
+        head = read_counted(stream, MAGIC_READ_SIZE, budget)
     except Exception as exc:
         return [
             make_row(
@@ -721,12 +882,20 @@ def inspect_member_stream(
                 size,
                 "Unreadable archive member",
                 True,
-                type(exc).__name__,
+                exception_text(exc),
+                integrity_status=INTEGRITY_ERROR,
             )
         ]
 
     archive_type = raw_archive_type(head)
     if archive_type is None:
+        error = None
+        integrity_status = INTEGRITY_VERIFIED
+        try:
+            drain_counted(stream, budget)
+        except Exception as exc:
+            error = exception_text(exc)
+            integrity_status = INTEGRITY_ERROR
         return [
             make_row(
                 logical_path,
@@ -734,7 +903,9 @@ def inspect_member_stream(
                 size,
                 detect_magic(head),
                 True,
+                error,
                 bom=detect_bom(head) or BOM_NOT_PRESENT,
+                integrity_status=integrity_status,
             )
         ]
 
@@ -748,6 +919,7 @@ def inspect_member_stream(
                 archive_type,
                 True,
                 f"Archive nesting limit reached ({MAX_ARCHIVE_DEPTH})",
+                integrity_status=INTEGRITY_NOT_VERIFIED,
             )
         ]
     if size > MAX_NESTED_ARCHIVE_SIZE:
@@ -759,6 +931,7 @@ def inspect_member_stream(
                 archive_type,
                 True,
                 "Nested archive exceeds 50 GiB safety limit",
+                integrity_status=INTEGRITY_NOT_VERIFIED,
             )
         ]
 
@@ -766,9 +939,9 @@ def inspect_member_stream(
     try:
         with open(temp_path, "wb") as output:
             output.write(head)
-            shutil.copyfileobj(stream, output, length=1024 * 1024)
+            copy_counted(stream, output, budget)
         node = ArchiveNode(temp_path, logical_path, levels, size, depth)
-        return process_archive_node(node, temp_dir)
+        return process_archive_node(node, temp_dir, budget=budget)
     except Exception as exc:
         return [
             make_row(
@@ -777,7 +950,8 @@ def inspect_member_stream(
                 size,
                 archive_type,
                 True,
-                type(exc).__name__,
+                exception_text(exc),
+                integrity_status=INTEGRITY_ERROR,
             )
         ]
     finally:
@@ -787,13 +961,76 @@ def inspect_member_stream(
             pass
 
 
-def expand_zip(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
+def archive_info_size(info) -> int:
+    return int(
+        getattr(info, "file_size", None)
+        or getattr(info, "uncompressed", None)
+        or 0
+    )
+
+
+def archive_member_error_rows(
+    node: ArchiveNode,
+    infos,
+    reason: str,
+) -> list[ResultRow]:
+    rows = []
+    for info in infos:
+        parts = split_archive_path(info.filename)
+        if not parts:
+            continue
+        rows.append(
+            make_row(
+                node.logical_path + "::" + "\\".join(parts),
+                node.levels + parts,
+                archive_info_size(info),
+                "Not inspected",
+                True,
+                reason,
+                integrity_status=INTEGRITY_NOT_VERIFIED,
+            )
+        )
+    return rows
+
+
+def prepare_archive_members(
+    node: ArchiveNode,
+    infos,
+    budget: WorkBudget,
+    archive_type: str,
+) -> list[ResultRow] | None:
+    try:
+        budget.expand_one_row(len(infos))
+    except BudgetExceeded as exc:
+        return [archive_row(node, archive_type, exception_text(exc))]
+
+    try:
+        budget.ensure_declared_size(sum(archive_info_size(info) for info in infos))
+    except BudgetExceeded as exc:
+        return archive_member_error_rows(node, infos, exception_text(exc))
+    return None
+
+
+def expand_zip(
+    node: ArchiveNode,
+    temp_dir: str,
+    budget: WorkBudget,
+) -> list[ResultRow]:
     rows: list[ResultRow] = []
     try:
         with zipfile.ZipFile(extended_path(node.source_path)) as archive:
             infos = [info for info in archive.infolist() if not info.is_dir()]
             if not infos:
-                return [archive_row(node, "ZIP archive (empty)")]
+                return [
+                    archive_row(
+                        node,
+                        "ZIP archive (empty)",
+                        integrity_status=INTEGRITY_VERIFIED,
+                    )
+                ]
+            limit_rows = prepare_archive_members(node, infos, budget, "ZIP archive")
+            if limit_rows is not None:
+                return limit_rows
 
             for info in infos:
                 parts = split_archive_path(info.filename)
@@ -811,6 +1048,7 @@ def expand_zip(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                                 levels=levels,
                                 parent_depth=node.depth,
                                 temp_dir=temp_dir,
+                                budget=budget,
                             )
                         )
                 except Exception as exc:
@@ -821,11 +1059,12 @@ def expand_zip(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                             info.file_size,
                             "Unreadable archive member",
                             True,
-                            type(exc).__name__,
+                            exception_text(exc),
+                            integrity_status=INTEGRITY_ERROR,
                         )
                     )
     except Exception as exc:
-        return [archive_row(node, "ZIP archive", type(exc).__name__)]
+        return [archive_row(node, "ZIP archive", exception_text(exc))]
     return rows
 
 
@@ -835,10 +1074,12 @@ class MemberCaptureIO(Py7zIO):
         expected_size: int,
         filename: str,
         temp_dir: str,
+        budget: WorkBudget,
     ):
         self.expected_size = expected_size or 0
         self.filename = filename
         self.temp_dir = temp_dir
+        self.budget = budget
         self.head = bytearray()
         self.total_written = 0
         self.mode: str | None = None
@@ -849,6 +1090,7 @@ class MemberCaptureIO(Py7zIO):
 
     def write(self, chunk):
         raw = bytes(chunk)
+        self.budget.consume_expanded(len(raw))
         if self.mode == "archive":
             self.output.write(raw)
             self.total_written += len(raw)
@@ -861,13 +1103,8 @@ class MemberCaptureIO(Py7zIO):
         self.head.extend(raw[:take])
         remainder = raw[take:]
         total_after = self.total_written + len(raw)
-        ready = (
-            len(self.head) >= 8
-            or len(self.head) >= MAGIC_READ_SIZE
-            or total_after >= self.expected_size
-        )
-
-        if ready:
+        archive_probe_ready = len(self.head) >= 8 or total_after >= self.expected_size
+        if archive_probe_ready:
             self.archive_type = raw_archive_type(bytes(self.head))
             if self.archive_type and self.expected_size <= MAX_NESTED_ARCHIVE_SIZE:
                 self.temp_path = make_temp_path(self.temp_dir, self.filename)
@@ -875,7 +1112,10 @@ class MemberCaptureIO(Py7zIO):
                 self.output.write(self.head)
                 self.output.write(remainder)
                 self.mode = "archive"
-            else:
+            elif (
+                len(self.head) >= MAGIC_READ_SIZE
+                or total_after >= self.expected_size
+            ):
                 self.mode = "head"
                 self.oversized = bool(
                     self.archive_type and self.expected_size > MAX_NESTED_ARCHIVE_SIZE
@@ -904,9 +1144,15 @@ class MemberCaptureIO(Py7zIO):
 
 
 class MemberCaptureFactory(WriterFactory):
-    def __init__(self, sizes: dict[str, int], temp_dir: str):
+    def __init__(
+        self,
+        sizes: dict[str, int],
+        temp_dir: str,
+        budget: WorkBudget,
+    ):
         self.sizes = sizes
         self.temp_dir = temp_dir
+        self.budget = budget
         self.products: dict[str, MemberCaptureIO] = {}
 
     def create(self, filename):
@@ -914,6 +1160,7 @@ class MemberCaptureFactory(WriterFactory):
             self.sizes.get(filename, 0),
             filename,
             self.temp_dir,
+            self.budget,
         )
         self.products[filename] = product
         return product
@@ -928,46 +1175,52 @@ def seven_zip_limit_rows(
     infos,
     reason: str,
 ) -> list[ResultRow]:
-    rows = []
-    for info in infos:
-        parts = split_archive_path(info.filename)
-        if not parts:
-            continue
-        rows.append(
-            make_row(
-                node.logical_path + "::" + "\\".join(parts),
-                node.levels + parts,
-                info.uncompressed or 0,
-                "Not inspected",
-                True,
-                reason,
-            )
-        )
-    return rows
+    return archive_member_error_rows(node, infos, reason)
 
 
-def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
+def expand_7z(
+    node: ArchiveNode,
+    temp_dir: str,
+    budget: WorkBudget,
+) -> list[ResultRow]:
+    infos = []
     factory = None
+    extraction_error = None
     try:
         with py7zr.SevenZipFile(extended_path(node.source_path), mode="r") as archive:
             infos = [info for info in archive.list() if not info.is_directory]
             if not infos:
-                return [archive_row(node, "7z archive (empty)")]
+                return [
+                    archive_row(
+                        node,
+                        "7z archive (empty)",
+                        integrity_status=INTEGRITY_VERIFIED,
+                    )
+                ]
             if len(infos) > SEVEN_ZIP_INSPECT_MAX_MEMBERS:
                 return seven_zip_limit_rows(
                     node,
                     infos,
                     f"Content not read: more than {SEVEN_ZIP_INSPECT_MAX_MEMBERS:,} 7z members",
                 )
+            limit_rows = prepare_archive_members(node, infos, budget, "7z archive")
+            if limit_rows is not None:
+                return limit_rows
 
             sizes = {info.filename: info.uncompressed or 0 for info in infos}
-            factory = MemberCaptureFactory(sizes, temp_dir)
-            archive.extractall(factory=factory)
-            factory.close_all()
+            factory = MemberCaptureFactory(sizes, temp_dir, budget)
+            try:
+                archive.extractall(factory=factory)
+            except Exception as exc:
+                extraction_error = exception_text(exc)
+            finally:
+                factory.close_all()
     except Exception as exc:
         if factory is not None:
             factory.close_all()
-        return [archive_row(node, "7z archive", type(exc).__name__)]
+        if infos:
+            return archive_member_error_rows(node, infos, exception_text(exc))
+        return [archive_row(node, "7z archive", exception_text(exc))]
 
     rows: list[ResultRow] = []
     for info in infos:
@@ -978,8 +1231,21 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
         logical_path = node.logical_path + "::" + "\\".join(parts)
         size = info.uncompressed or 0
         product = factory.products.get(info.filename)
+        complete = bool(product is not None and product.total_written >= size)
 
-        if size == 0:
+        if extraction_error is not None and not complete:
+            rows.append(
+                make_row(
+                    logical_path,
+                    levels,
+                    size,
+                    "Not inspected",
+                    True,
+                    extraction_error,
+                    integrity_status=INTEGRITY_NOT_VERIFIED,
+                )
+            )
+        elif size == 0:
             rows.append(
                 make_row(
                     logical_path,
@@ -988,6 +1254,7 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                     "Empty file",
                     True,
                     bom=BOM_NOT_PRESENT,
+                    integrity_status=INTEGRITY_VERIFIED,
                 )
             )
         elif product is None or not product.head:
@@ -999,6 +1266,7 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                     "Not inspected",
                     True,
                     "No captured member data",
+                    integrity_status=INTEGRITY_ERROR,
                 )
             )
         elif product.oversized:
@@ -1010,6 +1278,7 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                     product.archive_type or "Archive",
                     True,
                     "Nested archive exceeds 50 GiB safety limit",
+                    integrity_status=INTEGRITY_NOT_VERIFIED,
                 )
             )
         elif product.temp_path:
@@ -1021,7 +1290,7 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                 node.depth + 1,
             )
             try:
-                rows.extend(process_archive_node(child, temp_dir))
+                rows.extend(process_archive_node(child, temp_dir, budget=budget))
             finally:
                 try:
                     os.unlink(product.temp_path)
@@ -1036,6 +1305,7 @@ def expand_7z(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                     detect_magic(bytes(product.head)),
                     True,
                     bom=detect_bom(bytes(product.head)) or BOM_NOT_PRESENT,
+                    integrity_status=INTEGRITY_VERIFIED,
                 )
             )
     return rows
@@ -1060,13 +1330,26 @@ def configure_rar_backend() -> None:
             return
 
 
-def expand_rar(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
+def expand_rar(
+    node: ArchiveNode,
+    temp_dir: str,
+    budget: WorkBudget,
+) -> list[ResultRow]:
     rows: list[ResultRow] = []
     try:
         with rarfile.RarFile(extended_path(node.source_path)) as archive:
             infos = [info for info in archive.infolist() if not info.is_dir()]
             if not infos:
-                return [archive_row(node, "RAR archive (empty)")]
+                return [
+                    archive_row(
+                        node,
+                        "RAR archive (empty)",
+                        integrity_status=INTEGRITY_VERIFIED,
+                    )
+                ]
+            limit_rows = prepare_archive_members(node, infos, budget, "RAR archive")
+            if limit_rows is not None:
+                return limit_rows
 
             for info in infos:
                 parts = split_archive_path(info.filename)
@@ -1084,6 +1367,7 @@ def expand_rar(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                                 levels=levels,
                                 parent_depth=node.depth,
                                 temp_dir=temp_dir,
+                                budget=budget,
                             )
                         )
                 except Exception as exc:
@@ -1094,11 +1378,12 @@ def expand_rar(node: ArchiveNode, temp_dir: str) -> list[ResultRow]:
                             info.file_size,
                             "Unreadable archive member",
                             True,
-                            type(exc).__name__,
+                            exception_text(exc),
+                            integrity_status=INTEGRITY_ERROR,
                         )
                     )
     except Exception as exc:
-        return [archive_row(node, "RAR archive", type(exc).__name__)]
+        return [archive_row(node, "RAR archive", exception_text(exc))]
     return rows
 
 
@@ -1107,7 +1392,22 @@ def process_archive_node(
     temp_dir: str,
     known_file_type: str | None = None,
     known_bom: str | None = None,
+    *,
+    budget: WorkBudget | None = None,
 ) -> list[ResultRow]:
+    if budget is None:
+        budget = WorkBudget(rows_claimed=1)
+    try:
+        budget.check_time()
+    except BudgetExceeded as exc:
+        return [
+            archive_row(
+                node,
+                known_file_type or "Archive",
+                exception_text(exc),
+            )
+        ]
+
     if known_file_type is None:
         file_type, bom = inspect_file(node.source_path)
     else:
@@ -1118,7 +1418,23 @@ def process_archive_node(
             error = "File could not be read"
         elif file_type == "ZIP container (unreadable)":
             error = "Invalid or unsupported ZIP container"
-        return [archive_row(node, file_type, error, bom)]
+        return [
+            archive_row(
+                node,
+                file_type,
+                error,
+                bom,
+                integrity_status=(
+                    INTEGRITY_ERROR
+                    if error
+                    else (
+                        INTEGRITY_VERIFIED
+                        if node.depth > 0
+                        else INTEGRITY_NOT_VERIFIED
+                    )
+                ),
+            )
+        ]
 
     if node.depth >= MAX_ARCHIVE_DEPTH:
         return [
@@ -1130,13 +1446,18 @@ def process_archive_node(
         ]
 
     if file_type == "ZIP archive":
-        return expand_zip(node, temp_dir)
+        return expand_zip(node, temp_dir, budget)
     if file_type == "7z archive":
-        return expand_7z(node, temp_dir)
-    return expand_rar(node, temp_dir)
+        return expand_7z(node, temp_dir, budget)
+    return expand_rar(node, temp_dir, budget)
 
 
-def process_file(item: PhysicalFile) -> list[ResultRow]:
+def process_file(
+    item: PhysicalFile,
+    budget: WorkBudget | None = None,
+) -> list[ResultRow]:
+    if budget is None:
+        budget = WorkBudget(rows_claimed=1)
     if not item.inspect_content:
         if item.link_type is not None:
             content_type = "Filesystem link (not followed)"
@@ -1170,7 +1491,13 @@ def process_file(item: PhysicalFile) -> list[ResultRow]:
                 0,
                 item.properties,
             )
-            return process_archive_node(node, temp_dir, file_type, bom)
+            return process_archive_node(
+                node,
+                temp_dir,
+                file_type,
+                bom,
+                budget=budget,
+            )
 
     error = None
     if file_type == "Unreadable":
@@ -1197,7 +1524,11 @@ def process_file(item: PhysicalFile) -> list[ResultRow]:
 def inspect_files(
     physical_files: list[PhysicalFile],
     workers: int = DEFAULT_WORKERS,
+    budget: WorkBudget | None = None,
 ) -> list[ResultRow]:
+    if budget is None:
+        budget = WorkBudget()
+    budget.initialize_rows(len(physical_files))
     rows: list[ResultRow] = []
     completed = 0
     last_print = time.monotonic()
@@ -1207,7 +1538,7 @@ def inspect_files(
         pending = set()
         for _ in range(workers * 2):
             try:
-                pending.add(executor.submit(process_file, next(items)))
+                pending.add(executor.submit(process_file, next(items), budget))
             except StopIteration:
                 break
 
@@ -1217,7 +1548,7 @@ def inspect_files(
                 rows.extend(future.result())
                 completed += 1
                 try:
-                    pending.add(executor.submit(process_file, next(items)))
+                    pending.add(executor.submit(process_file, next(items), budget))
                 except StopIteration:
                     pass
 
@@ -1271,7 +1602,12 @@ def styled_cell(
     return cell
 
 
-def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -> None:
+def write_workbook(
+    rows: list[ResultRow],
+    output_path: Path,
+    root_folder: str,
+    report: RunReport | None = None,
+) -> None:
     if len(rows) > EXCEL_MAX_DATA_ROWS:
         raise ValueError(
             f"The result has {len(rows):,} rows; one Excel sheet supports at most "
@@ -1320,6 +1656,7 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         "Время создания файла",
         "Время изменения метаданных",
         "BOM",
+        "Проверка целостности",
         "Тип по содержимому",
         "В архиве",
         "Ошибка",
@@ -1367,6 +1704,8 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
     )
     blue_fill = PatternFill("solid", fgColor="FF00B0F0")
     black_fill = PatternFill("solid", fgColor=Color(theme=1))
+    green_fill = PatternFill("solid", fgColor="FFC6E0B4")
+    amber_fill = PatternFill("solid", fgColor="FFFFE699")
     centered = Alignment(horizontal="center", vertical="center")
     wrapped_centered = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
@@ -1382,12 +1721,16 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         "Цель ссылки": 32,
         "Права доступа": 16,
         "Атрибуты файла (Windows)": 32,
+        "st_ino": 22,
+        "st_dev": 22,
+        "st_rdev": 16,
         "st_uid (User ID of the owner)": 17,
         "st_gid (Group ID of the owner)": 17,
         "Время последнего обращения к файлу": 20,
         "Время последнего изменения файла": 20,
         "Время создания файла": 20,
         "Время изменения метаданных": 20,
+        "Проверка целостности": 20,
         "Тип по содержимому": 24,
         "Ошибка": 20,
     }
@@ -1409,11 +1752,11 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
     ws.append([None])
 
     number_row = [None]
-    for _ in headers:
+    for index, _ in enumerate(headers, start=1):
         number_row.append(
             styled_cell(
                 ws,
-                "=COLUMN()-COLUMN($A$4)",
+                index,
                 font=normal_font,
                 border=border,
                 alignment=centered,
@@ -1466,9 +1809,15 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         "st_blksize",
         "st_blocks",
         "BOM",
+        "Проверка целостности",
         "В архиве",
     }
     number_formats = {
+        "st_ino": "@",
+        "st_dev": "@",
+        "st_rdev": "@",
+        "st_uid (User ID of the owner)": "@",
+        "st_gid (Group ID of the owner)": "@",
         "Размер файла в мб": "#,##0.000",
         "Размер файла, байт": "#,##0",
         "Время последнего обращения к файлу": "yyyy-mm-dd hh:mm:ss",
@@ -1476,7 +1825,7 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         "Время создания файла": "yyyy-mm-dd hh:mm:ss",
         "Время изменения метаданных": "yyyy-mm-dd hh:mm:ss",
     }
-    for row in rows:
+    for row_number, row in enumerate(rows, start=1):
         properties = row.properties
         stem_name = ntpath.splitext(row.leaf_name)[0]
         values = [
@@ -1523,6 +1872,7 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
             properties.created_at if properties else None,
             properties.metadata_changed_at if properties else None,
             row.bom,
+            row.integrity_status,
             row.content_type,
             row.in_archive,
             row.error,
@@ -1532,7 +1882,7 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
         output_row.append(
             styled_cell(
                 ws,
-                "=ROW()-ROW($B$6)",
+                row_number,
                 font=normal_font,
                 border=border,
                 alignment=centered,
@@ -1564,6 +1914,218 @@ def write_workbook(rows: list[ResultRow], output_path: Path, root_folder: str) -
     ws.auto_filter.ref = f"B6:{get_column_letter(last_table_column)}{last_row}"
     ws.sheet_view.selection[0].activeCell = "B6"
     ws.sheet_view.selection[0].sqref = "B6"
+
+    if report is None:
+        now = local_now()
+        report = RunReport(
+            status="COMPLETE",
+            started_at=now,
+            completed_at=now,
+            workers=DEFAULT_WORKERS,
+            physical_items=len(rows),
+            logical_rows=len(rows),
+            row_errors=sum(row.error is not None for row in rows),
+            stats=ScanStats(),
+            expanded_bytes=0,
+            max_expanded_bytes=DEFAULT_MAX_EXPANDED_BYTES,
+            max_archive_seconds=None,
+            max_rows=EXCEL_MAX_DATA_ROWS,
+        )
+
+    status_ws = wb.create_sheet("scan_status")
+    status_ws.sheet_view.showGridLines = False
+    status_ws.sheet_properties.tabColor = (
+        "FF70AD47" if report.status == "COMPLETE" else "FFFFC000"
+    )
+    status_ws.freeze_panes = "A2"
+    status_ws.column_dimensions["A"].width = 34
+    status_ws.column_dimensions["B"].width = 72
+    status_ws.column_dimensions["C"].width = 72
+
+    status_header = [
+        styled_cell(
+            status_ws,
+            "Параметр",
+            font=header_font,
+            border=border,
+            fill=blue_fill,
+            alignment=wrapped_centered,
+        ),
+        styled_cell(
+            status_ws,
+            "Значение",
+            font=header_font,
+            border=border,
+            fill=blue_fill,
+            alignment=wrapped_centered,
+        ),
+    ]
+    status_ws.append(status_header)
+
+    max_expanded = (
+        "без ограничения"
+        if report.max_expanded_bytes is None
+        else report.max_expanded_bytes
+    )
+    max_seconds = (
+        "без ограничения"
+        if report.max_archive_seconds is None
+        else report.max_archive_seconds
+    )
+    summary_rows = [
+        ("Статус", report.status),
+        ("Корневая папка", root_folder),
+        ("Начало", report.started_at),
+        ("Завершение", report.completed_at),
+        ("Потоки", report.workers),
+        ("Физические элементы", report.physical_items),
+        ("Логические строки", report.logical_rows),
+        ("Папки", report.stats.folders),
+        ("Пропущенные папки", report.stats.skipped_folders),
+        ("Пропущенные элементы", report.stats.skipped_entries),
+        ("Строки с ошибками", report.row_errors),
+        ("Распаковано, байт", report.expanded_bytes),
+        ("Лимит распаковки, байт", max_expanded),
+        ("Лимит времени архивов, сек.", max_seconds),
+        ("Лимит логических строк", report.max_rows),
+        (
+            "Семантика",
+            (
+                "Логический файловый инвентарь: обычные папки задают иерархию; "
+                "поддерживаемые архивы раскрываются до конечных файлов."
+            ),
+        ),
+    ]
+    for label, value in summary_rows:
+        if isinstance(value, datetime):
+            number_format = "yyyy-mm-dd hh:mm:ss"
+        elif isinstance(value, int):
+            number_format = "#,##0"
+        elif isinstance(value, float):
+            number_format = "#,##0.###"
+        else:
+            number_format = None
+        value_fill = None
+        value_font = normal_font
+        value_alignment = None
+        if label == "Статус":
+            value_fill = green_fill if value == "COMPLETE" else amber_fill
+            value_font = title_font
+            value_alignment = centered
+        elif label == "Семантика":
+            value_alignment = Alignment(vertical="top", wrap_text=True)
+        status_ws.append(
+            [
+                styled_cell(
+                    status_ws,
+                    label,
+                    font=title_font,
+                    border=border,
+                ),
+                styled_cell(
+                    status_ws,
+                    excel_text(value) if isinstance(value, str) else value,
+                    font=value_font,
+                    border=border,
+                    fill=value_fill,
+                    alignment=value_alignment,
+                    number_format=number_format,
+                    force_text=isinstance(value, str),
+                ),
+            ]
+        )
+    status_ws.row_dimensions[17].height = 32
+
+    status_ws.append([None])
+    diagnostic_headers = ("Этап", "Путь", "Ошибка")
+    status_ws.append(
+        [
+            styled_cell(
+                status_ws,
+                header,
+                font=header_font,
+                border=border,
+                fill=blue_fill,
+                alignment=wrapped_centered,
+            )
+            for header in diagnostic_headers
+        ]
+    )
+    diagnostic_total = len(report.stats.diagnostics) + report.row_errors
+    diagnostic_iterator = chain(
+        report.stats.diagnostics,
+        (
+            Diagnostic(row.full_path, "archive or content inspection", row.error)
+            for row in rows
+            if row.error is not None
+        ),
+    )
+    max_diagnostic_rows = 1_048_576 - 19
+    displayed_diagnostics = (
+        max_diagnostic_rows - 1
+        if diagnostic_total > max_diagnostic_rows
+        else diagnostic_total
+    )
+
+    def append_diagnostic(worksheet_row: int, diagnostic: Diagnostic) -> None:
+        status_ws.append(
+            [
+                styled_cell(
+                    status_ws,
+                    excel_text(diagnostic.stage),
+                    font=normal_font,
+                    border=border,
+                    force_text=True,
+                ),
+                styled_cell(
+                    status_ws,
+                    excel_text(diagnostic.path),
+                    font=normal_font,
+                    border=border,
+                    alignment=Alignment(vertical="top", wrap_text=True),
+                    force_text=True,
+                ),
+                styled_cell(
+                    status_ws,
+                    excel_text(diagnostic.error),
+                    font=normal_font,
+                    border=border,
+                    alignment=Alignment(vertical="top", wrap_text=True),
+                    force_text=True,
+                ),
+            ]
+        )
+        status_ws.row_dimensions[worksheet_row].height = 45
+
+    if diagnostic_total:
+        for worksheet_row, diagnostic in enumerate(
+            islice(diagnostic_iterator, displayed_diagnostics),
+            start=20,
+        ):
+            append_diagnostic(worksheet_row, diagnostic)
+        if diagnostic_total > displayed_diagnostics:
+            append_diagnostic(
+                20 + displayed_diagnostics,
+                Diagnostic(
+                    "",
+                    "diagnostics truncated",
+                    f"{diagnostic_total - displayed_diagnostics:,} additional diagnostics omitted",
+                ),
+            )
+    else:
+        status_ws.append(
+            [
+                styled_cell(
+                    status_ws,
+                    "Нет ошибок",
+                    font=normal_font,
+                    border=border,
+                    force_text=True,
+                ),
+                styled_cell(status_ws, None, font=normal_font, border=border),
+                styled_cell(status_ws, None, font=normal_font, border=border),
+            ]
+        )
 
     output_name = absolute_path(output_path)
     output_folder = os.path.dirname(output_name)
@@ -1600,6 +2162,22 @@ def worker_count(value: str) -> int:
     return workers
 
 
+def non_negative_float(value: str) -> float:
+    number = float(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("value must be zero or greater")
+    return number
+
+
+def row_limit(value: str) -> int:
+    limit = int(value)
+    if not 1 <= limit <= EXCEL_MAX_DATA_ROWS:
+        raise argparse.ArgumentTypeError(
+            f"max rows must be between 1 and {EXCEL_MAX_DATA_ROWS:,}"
+        )
+    return limit
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
@@ -1609,6 +2187,24 @@ def parse_args() -> argparse.Namespace:
         type=worker_count,
         default=DEFAULT_WORKERS,
         help=f"Concurrent file workers (default: {DEFAULT_WORKERS})",
+    )
+    parser.add_argument(
+        "--max-expanded-gib",
+        type=non_negative_float,
+        default=DEFAULT_MAX_EXPANDED_BYTES / (1024**3),
+        help="Maximum total decompressed archive data; 0 disables the limit",
+    )
+    parser.add_argument(
+        "--max-archive-seconds",
+        type=non_negative_float,
+        default=DEFAULT_MAX_ARCHIVE_SECONDS,
+        help="Maximum archive-inspection time; 0 disables the limit",
+    )
+    parser.add_argument(
+        "--max-rows",
+        type=row_limit,
+        default=EXCEL_MAX_DATA_ROWS,
+        help=f"Maximum logical rows (default: {EXCEL_MAX_DATA_ROWS:,})",
     )
     return parser.parse_args()
 
@@ -1624,9 +2220,11 @@ def run() -> int:
         and configured_root == ROOT_FOLDER
         and ROOT_FOLDER == r"PASTE_FOLDER_PATH_HERE"
     ):
-        raise ValueError(
-            "Edit ROOT_FOLDER near the top of folder_review.py before running."
-        )
+        if not sys.stdin.isatty():
+            raise ValueError("Run with --root or start RUN.bat interactively.")
+        configured_root = input("Folder to inspect: ").strip().strip('"')
+        if not configured_root:
+            raise ValueError("No folder was entered.")
     root_folder = absolute_path(os.path.normpath(configured_root))
     if not os.path.isdir(extended_path(root_folder)):
         raise ValueError(f"Folder is unavailable: {root_folder}")
@@ -1641,6 +2239,7 @@ def run() -> int:
 
     configure_rar_backend()
     started = time.monotonic()
+    started_at = local_now()
     print(f"Scanning: {root_folder}")
     print(f"Workers: {args.workers}")
     physical_files, stats = scan_tree(
@@ -1648,21 +2247,66 @@ def run() -> int:
         {normalized_key(str(output_path))},
         args.workers,
     )
-    print(f"Physical files found: {len(physical_files):,}")
+    print(f"Physical items found: {len(physical_files):,}")
 
-    rows = inspect_files(physical_files, args.workers)
+    max_expanded_bytes = (
+        None
+        if args.max_expanded_gib == 0
+        else int(args.max_expanded_gib * (1024**3))
+    )
+    max_archive_seconds = (
+        None if args.max_archive_seconds == 0 else args.max_archive_seconds
+    )
+    budget = WorkBudget(
+        max_expanded_bytes=max_expanded_bytes,
+        max_rows=args.max_rows,
+        deadline=(
+            None
+            if max_archive_seconds is None
+            else time.monotonic() + max_archive_seconds
+        ),
+    )
+    rows = inspect_files(physical_files, args.workers, budget)
     print(f"Logical file rows: {len(rows):,}")
-    print("Writing Excel workbook...")
-    write_workbook(rows, output_path, root_folder)
 
     errors = sum(row.error is not None for row in rows)
+    partial = bool(
+        stats.skipped_folders
+        or stats.skipped_entries
+        or stats.diagnostics
+        or errors
+    )
+    report = RunReport(
+        status="PARTIAL" if partial else "COMPLETE",
+        started_at=started_at,
+        completed_at=local_now(),
+        workers=args.workers,
+        physical_items=len(physical_files),
+        logical_rows=len(rows),
+        row_errors=errors,
+        stats=stats,
+        expanded_bytes=budget.expanded_bytes,
+        max_expanded_bytes=max_expanded_bytes,
+        max_archive_seconds=max_archive_seconds,
+        max_rows=args.max_rows,
+    )
+    print("Writing Excel workbook...")
+    write_workbook(rows, output_path, root_folder, report)
+
     elapsed = time.monotonic() - started
     print(
         f"Done in {elapsed:.1f}s | folders: {stats.folders:,} | "
         f"skipped folders: {stats.skipped_folders:,} | skipped entries: {stats.skipped_entries:,} | "
         f"rows with errors: {errors:,}"
     )
+    print(f"Scan status: {report.status}")
     print(f"Result: {output_path}")
+    if partial:
+        print(
+            "WARNING: Partial result. Review the scan_status sheet.",
+            flush=True,
+        )
+        return 2
     return 0
 
 

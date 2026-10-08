@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import os
+import struct
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -57,6 +61,7 @@ class FolderReviewTests(unittest.TestCase):
             self.root / "book.xlsx",
             {
                 "[Content_Types].xml": b"<Types />",
+                "_rels/.rels": b"<Relationships />",
                 "xl/workbook.xml": b"<workbook />",
             },
         )
@@ -98,6 +103,7 @@ class FolderReviewTests(unittest.TestCase):
         bom_row = next(row for row in rows if row.leaf_name == "bom.txt")
         self.assertEqual(workbook_row.content_type, "Excel workbook (XLSX)")
         self.assertEqual(bom_row.bom, "UTF-16 LE")
+        self.assertEqual(bom_row.integrity_status, folder_review.INTEGRITY_VERIFIED)
         self.assertEqual(bom_row.item_type, "Файл внутри архива")
         self.assertIsNone(bom_row.properties)
         self.assertFalse(
@@ -140,6 +146,103 @@ class FolderReviewTests(unittest.TestCase):
 
         self.assertEqual([row.leaf_name for row in rows], ["leaf.txt"])
         self.assertTrue(rows[0].full_path.endswith(r"archive.bin::Folder\leaf.txt"))
+
+    def test_ordinary_zip_with_office_like_folder_is_expanded(self) -> None:
+        archive = self.make_zip(
+            self.root / "ordinary.zip",
+            {
+                "word/notes.txt": b"not an Office package",
+                "other.txt": b"must also be inventoried",
+            },
+        )
+
+        rows = self.inspect(archive)
+
+        self.assertEqual(
+            {row.leaf_name for row in rows},
+            {"notes.txt", "other.txt"},
+        )
+        self.assertTrue(all(row.error is None for row in rows))
+        self.assertTrue(
+            all(
+                row.integrity_status == folder_review.INTEGRITY_VERIFIED
+                for row in rows
+            )
+        )
+
+    def test_bad_zip_crc_is_reported(self) -> None:
+        archive_path = self.root / "bad-crc.zip"
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("large.txt", b"A" * 65_536)
+        data = bytearray(archive_path.read_bytes())
+        central = data.index(b"PK\x01\x02")
+        original_crc = struct.unpack_from("<I", data, central + 16)[0]
+        bad_crc = original_crc ^ 1
+        struct.pack_into("<I", data, central + 16, bad_crc)
+        struct.pack_into("<I", data, 14, bad_crc)
+        archive_path.write_bytes(data)
+
+        rows = self.inspect(archive_path)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].leaf_name, "large.txt")
+        self.assertIsNotNone(rows[0].error)
+        self.assertIn("BadZipFile", rows[0].error)
+        self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
+
+    def test_encrypted_7z_preserves_known_member_names(self) -> None:
+        archive_path = self.root / "encrypted.7z"
+        with py7zr.SevenZipFile(
+            archive_path,
+            "w",
+            password="review-only",
+            header_encryption=False,
+        ) as archive:
+            archive.writestr(b"first", "first.txt")
+            archive.writestr(b"second", "second.txt")
+
+        rows = self.inspect(archive_path)
+
+        self.assertEqual(
+            {row.leaf_name for row in rows},
+            {"first.txt", "second.txt"},
+        )
+        self.assertTrue(all(row.error for row in rows))
+        self.assertTrue(all("PasswordRequired" in row.error for row in rows))
+        self.assertTrue(
+            all(
+                row.integrity_status == folder_review.INTEGRITY_NOT_VERIFIED
+                for row in rows
+            )
+        )
+
+    def test_archive_expansion_budget_stops_7z_work(self) -> None:
+        archive_path = self.make_7z(
+            self.root / "large.7z",
+            {"large.txt": b"A" * (2 * 1024 * 1024)},
+        )
+        stat_result = archive_path.stat()
+        item = folder_review.PhysicalFile(
+            path=str(archive_path),
+            levels=(archive_path.name,),
+            size=stat_result.st_size,
+            properties=folder_review.file_properties(
+                archive_path.name,
+                stat_result,
+            ),
+        )
+        budget = folder_review.WorkBudget(
+            max_expanded_bytes=1024 * 1024,
+            rows_claimed=1,
+        )
+
+        rows = folder_review.process_file(item, budget)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].leaf_name, "large.txt")
+        self.assertIn("budget", rows[0].error.lower())
+        self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_NOT_VERIFIED)
+        self.assertLessEqual(budget.expanded_bytes, 1024 * 1024)
 
     def test_corrupt_nested_archive_becomes_error_row(self) -> None:
         outer = self.make_zip(
@@ -241,6 +344,7 @@ class FolderReviewTests(unittest.TestCase):
                 "Время создания файла",
                 "Время изменения метаданных",
                 "BOM",
+                "Проверка целостности",
             }
             self.assertTrue(requested_headers.issubset(columns))
             self.assertEqual(values[columns["Имя файла"]], "leaf")
@@ -248,6 +352,7 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual(values[columns["Тип по содержимому"]], "PDF")
             self.assertEqual(values[columns["В архиве"]], "нет")
             self.assertEqual(values[columns["BOM"]], "нет")
+            self.assertIsNone(values[columns["Проверка целостности"]])
             self.assertEqual(values[columns["Тип элемента"]], "Файл")
             self.assertEqual(values[columns["Скрытый"]], "нет")
             self.assertEqual(
@@ -256,6 +361,17 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual(values[columns["st_mode"]], properties.mode)
             self.assertEqual(values[columns["st_ino"]], properties.inode)
             self.assertIsNotNone(values[columns["Время последнего изменения файла"]])
+            status_sheet = workbook["scan_status"]
+            status_values = {
+                row[0]: row[1]
+                for row in status_sheet.iter_rows(
+                    min_row=2,
+                    max_row=17,
+                    values_only=True,
+                )
+            }
+            self.assertEqual(status_values["Статус"], "COMPLETE")
+            self.assertEqual(status_values["Логические строки"], 1)
         finally:
             workbook.close()
 
@@ -281,6 +397,26 @@ class FolderReviewTests(unittest.TestCase):
         else:
             self.assertIsNone(rows[0].properties.file_attributes_value)
             self.assertIsNotNone(rows[0].properties.metadata_changed_at)
+
+    def test_folder_enumeration_error_keeps_path_diagnostic(self) -> None:
+        with mock.patch.object(
+            folder_review.os,
+            "scandir",
+            side_effect=PermissionError("denied"),
+        ):
+            subfolders, files, diagnostics, skipped = folder_review.scan_folder(
+                str(self.root),
+                (),
+                set(),
+            )
+
+        self.assertEqual(subfolders, [])
+        self.assertEqual(files, [])
+        self.assertTrue(skipped)
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0].path, str(self.root))
+        self.assertEqual(diagnostics[0].stage, "folder enumeration")
+        self.assertIn("PermissionError", diagnostics[0].error)
 
     def test_links_and_special_items_are_reported_without_following(self) -> None:
         if os.name == "nt":
@@ -315,6 +451,36 @@ class FolderReviewTests(unittest.TestCase):
             by_name["events.fifo"].content_type,
             "Special filesystem item (not read)",
         )
+        self.assertEqual(sum(row.leaf_name == "inside.txt" for row in rows), 1)
+
+    def test_windows_junction_is_reported_without_following(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows junction behavior")
+
+        target_folder = self.root / "target-folder"
+        target_folder.mkdir()
+        (target_folder / "inside.txt").write_text("inside", encoding="utf-8")
+        junction = self.root / "folder-junction"
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target_folder)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest(f"Junction creation failed: {result.stderr}")
+
+        files, stats = folder_review.scan_tree(str(self.root), set(), workers=2)
+        rows = folder_review.inspect_files(files, workers=2)
+        by_name = {row.leaf_name: row for row in rows}
+
+        self.assertEqual(stats.skipped_entries, 0)
+        self.assertEqual(
+            by_name["folder-junction"].item_type,
+            "Соединение каталогов (junction)",
+        )
+        self.assertEqual(by_name["folder-junction"].link_type, "Junction")
+        self.assertTrue(by_name["folder-junction"].link_target)
         self.assertEqual(sum(row.leaf_name == "inside.txt" for row in rows), 1)
 
     def test_hard_links_are_marked(self) -> None:
@@ -373,6 +539,71 @@ class FolderReviewTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "macOS is not supported"),
         ):
             folder_review.validate_platform()
+
+    def test_partial_scan_writes_diagnostics_and_returns_two(self) -> None:
+        output = self.root / "partial.xlsx"
+        diagnostic = folder_review.Diagnostic(
+            str(self.root / "unavailable"),
+            "folder enumeration",
+            "PermissionError: denied",
+        )
+        stats = folder_review.ScanStats(
+            folders=2,
+            skipped_folders=1,
+            diagnostics=[diagnostic],
+        )
+        with (
+            mock.patch.object(
+                folder_review.sys,
+                "argv",
+                [
+                    "folder_review.py",
+                    "--root",
+                    str(self.root),
+                    "--output",
+                    str(output),
+                ],
+            ),
+            mock.patch.object(folder_review, "scan_tree", return_value=([], stats)),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            exit_code = folder_review.run()
+
+        self.assertEqual(exit_code, 2)
+        workbook = load_workbook(output, read_only=True, data_only=True)
+        try:
+            status_sheet = workbook["scan_status"]
+            values = list(status_sheet.iter_rows(values_only=True))
+            self.assertIn(("Статус", "PARTIAL"), values)
+            self.assertTrue(
+                any(
+                    len(row) >= 3
+                    and row[0] == "folder enumeration"
+                    and row[1] == str(self.root / "unavailable")
+                    and "PermissionError" in row[2]
+                    for row in values
+                )
+            )
+        finally:
+            workbook.close()
+
+    def test_interactive_first_run_prompts_for_folder(self) -> None:
+        output = self.root / "prompted.xlsx"
+        with (
+            mock.patch.object(
+                folder_review.sys,
+                "argv",
+                ["folder_review.py", "--output", str(output)],
+            ),
+            mock.patch.object(folder_review.sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", return_value=str(self.root)),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            exit_code = folder_review.run()
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(output.is_file())
 
     def test_archive_path_splits_both_separator_styles(self) -> None:
         self.assertEqual(

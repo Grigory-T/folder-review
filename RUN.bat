@@ -28,10 +28,20 @@ if errorlevel 1 goto :failed
 
 echo Running folder review...
 ".venv\Scripts\python.exe" "folder_review.py" %*
-if errorlevel 1 goto :failed
+set "RUN_EXIT=%ERRORLEVEL%"
+if "%RUN_EXIT%"=="2" goto :partial
+if not "%RUN_EXIT%"=="0" (
+    echo ERROR: folder review failed with exit code %RUN_EXIT%.
+    exit /b %RUN_EXIT%
+)
 
 echo Completed successfully.
 exit /b 0
+
+:partial
+echo WARNING: folder review completed with partial results.
+echo Review the scan_status sheet in the generated workbook.
+exit /b 2
 
 :failed
 echo ERROR: folder review failed with exit code %ERRORLEVEL%.

@@ -1,9 +1,9 @@
 # Folder Review
 
-Folder Review creates one flat Excel inventory for a selected folder. It scans
+Folder Review creates one Excel inventory for a selected folder. It scans
 filesystem items and recursively opens ZIP, 7z, and RAR archives in any nesting
-order. Archive names and internal folders remain visible as hierarchy levels in
-the output.
+order. Archive names and internal folders remain visible as hierarchy levels.
+The workbook contains the flat inventory and an explicit scan-status sheet.
 
 ## Requirements
 
@@ -23,10 +23,8 @@ Set-Location .\folder-review
 
 After cloning, only two actions are needed:
 
-1. Open `folder_review.py` and replace `PASTE_FOLDER_PATH_HERE` in
-   `ROOT_FOLDER` with the local, mapped-drive, or UNC folder to inspect, for
-   example `r"\\server\share\folder"`.
-2. Run `RUN.bat`.
+1. Run `RUN.bat`.
+2. Enter the local, mapped-drive, or UNC folder when prompted.
 
 The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
 `.venv` with uv and installs the locked dependencies automatically.
@@ -36,15 +34,37 @@ The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
 - Files are classified from their content, not only their extension.
 - ZIP, 7z, and RAR archives can contain folders and more supported archives in
   any order.
-- DOCX, XLSX, PPTX, EPUB, and JAR ZIP containers remain single logical files.
+- DOCX, XLSX, XLSB, PPTX, EPUB, and JAR ZIP containers remain single logical
+  files. Office formats require their real package markers; a ZIP merely
+  containing a `word`, `xl`, or `ppt` folder is still expanded as an archive.
 - Symbolic links, junctions, reparse points, and special filesystem items are
   reported as rows but are not followed or opened.
 - Local folders, mapped network drives, and Windows UNC paths are supported.
 - Folder enumeration and file inspection use 16 workers by default. Archive
   extraction is capped separately to avoid excessive memory use.
+- Archive members are read to completion. ZIP CRC and backend-provided 7z/RAR
+  integrity failures are reported in `Проверка целостности` and `Ошибка`.
 - Empty, encrypted, damaged, unsupported, or safety-limited archive members are
-  retained as rows with an error instead of stopping the scan.
+  retained as rows with errors whenever their names are readable.
 - Nested archives use temporary local storage and are removed after inspection.
+
+## Completion status
+
+The `scan_status` sheet records `COMPLETE` or `PARTIAL`, run counts, configured
+limits, and path-specific folder/archive diagnostics. Exit codes are:
+
+- `0`: complete inventory;
+- `2`: usable workbook with partial results or errors;
+- `1`: fatal failure.
+
+`RUN.bat` does not print `Completed successfully` for a partial result.
+
+Archive processing is bounded by default to 100 GiB of total decompressed data,
+six hours of archive-inspection time, the Excel logical-row limit, 20 nesting
+levels, and four concurrently expanded archives. Limits can be changed with
+`--max-expanded-gib`, `--max-archive-seconds`, and `--max-rows`; use `0` for an
+unlimited byte or time budget. Reaching a limit produces a partial workbook
+instead of silent omission.
 
 ## Long paths and temporary files
 
@@ -79,19 +99,25 @@ encrypted, sparse, and content-indexing flags. These fields use metadata already
 returned by the operating system; the tool does not enumerate ACLs or alternate
 data streams. Archive members are logical files rather than OS filesystem
 objects, so their OS-only fields remain blank and their item type is
-`Файл внутри архива`. Their size, content type, hierarchy, and BOM are still
-reported.
+`Файл внутри архива`. Their size, content type, hierarchy, BOM, integrity
+status, and errors are reported.
+
+This is a logical file inventory. Ordinary folders define hierarchy and are not
+separate rows. A successfully expanded archive is represented by its final
+member rows rather than an additional parent row; do not sum logical member
+sizes as physical disk usage.
 
 BOM detection is independent from file-type detection and recognizes UTF-8,
 UTF-16 LE/BE, and UTF-32 LE/BE markers.
 
-For one-off automation, the configured path can be overridden:
+For automation, pass the folder explicitly. This example uses 32 workers for a
+network share:
 
 ```powershell
 .\RUN.bat --root "\\server\share\folder" --workers 32
 ```
 
-On Linux, use the same configured `ROOT_FOLDER` or pass `--root`:
+On Linux, pass `--root`:
 
 ```bash
 uv sync --frozen --no-dev
