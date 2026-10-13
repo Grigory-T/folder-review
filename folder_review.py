@@ -6,20 +6,26 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import ntpath
 import os
 import re
+import shutil
 import stat
 import sys
 import tempfile
 import time
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import chain, islice
 from pathlib import Path
 from threading import Lock, Semaphore
+
+# A normal source launch must not create caches beside inspected source files.
+sys.dont_write_bytecode = True
 
 import olefile
 import py7zr
@@ -37,6 +43,38 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 
 OUTPUT_FILE = "folder-review.xlsx"
 
+# Diagnostic metadata remains available through --full-metadata. The default
+# inventory keeps fields useful for an ordinary content/folder review.
+ADVANCED_METADATA_HEADERS = frozenset(
+    {
+        "Тип ссылки",
+        "Цель ссылки",
+        "Права доступа",
+        "Только чтение",
+        "Исполняемый",
+        "Системный (Windows)",
+        "Архивный (Windows)",
+        "Временный (Windows)",
+        "Автономный (Windows)",
+        "Сжатый (Windows)",
+        "Зашифрованный (Windows)",
+        "Разреженный (Windows)",
+        "Не индексировать содержимое (Windows)",
+        "Атрибуты файла (Windows)",
+        "st_file_attributes",
+        "st_reparse_tag",
+        "st_mode",
+        "st_ino",
+        "st_dev",
+        "st_rdev",
+        "st_nlink",
+        "st_uid (User ID of the owner)",
+        "st_gid (Group ID of the owner)",
+        "st_blksize",
+        "st_blocks",
+    }
+)
+
 
 # Runtime limits -------------------------------------------------------------
 
@@ -53,6 +91,56 @@ EXCEL_MAX_DATA_ROWS = 1_048_570  # rows 7..1,048,576
 EXCEL_MAX_TEXT_LENGTH = 32_767
 HEAVY_ARCHIVE_SLOTS = Semaphore(MAX_CONCURRENT_ARCHIVES)
 ARCHIVE_TYPES = {"ZIP archive", "7z archive", "RAR archive"}
+ARCHIVE_EXTENSIONS = frozenset({"zip", "7z", "rar"})
+# These names improve leaf labels only. Expansion uses the positive archive
+# extension policy, so an unknown ZIP-based application format is a leaf too.
+ZIP_LEAF_FORMATS = {
+    extension: f"{label} ({extension.upper()})"
+    for extensions, label in (
+        (("docx", "docm"), "Word document"),
+        (("dotx", "dotm"), "Word template"),
+        (("xlsx", "xlsm"), "Excel workbook"),
+        (("xlsb",), "Excel binary workbook"),
+        (("xltx", "xltm"), "Excel template"),
+        (("xlam",), "Excel add-in"),
+        (("pptx", "pptm"), "PowerPoint presentation"),
+        (("potx", "potm"), "PowerPoint template"),
+        (("ppsx", "ppsm"), "PowerPoint slideshow"),
+        (("sldx", "sldm"), "PowerPoint slide"),
+        (("ppam",), "PowerPoint add-in"),
+        (("thmx",), "Office theme"),
+        (("vsdx", "vsdm"), "Visio drawing"),
+        (("vstx", "vstm"), "Visio template"),
+        (("vssx", "vssm"), "Visio stencil"),
+        (("odt", "ott", "odm"), "OpenDocument text"),
+        (("ods", "ots"), "OpenDocument spreadsheet"),
+        (("odp", "otp"), "OpenDocument presentation"),
+        (("odg", "otg"), "OpenDocument drawing"),
+        (("odf", "odb"), "OpenDocument file"),
+        (("epub",), "EPUB document"),
+        (("jar",), "JAR archive"),
+        (("war", "ear"), "Java application package"),
+        (("apk", "aab", "apks", "xapk"), "Android application package"),
+        (("ipa",), "iOS application package"),
+        (("appx", "appxbundle", "msix", "msixbundle"), "Windows application package"),
+        (("xpi",), "Browser extension package"),
+        (("nupkg", "snupkg"), "NuGet package"),
+        (("whl",), "Python wheel"),
+        (("kmz",), "Google Earth document"),
+        (("xps", "oxps", "dwfx"), "Fixed-layout document"),
+        (("3mf", "usdz"), "3D model package"),
+        (("pages", "numbers", "key"), "iWork document"),
+        (("kra", "ora", "sketch"), "Graphics document"),
+        (("sb2", "sb3", "ggb"), "Application document"),
+        (("idml",), "InDesign markup document"),
+        (("xmind",), "Mind-map document"),
+        (("mxl",), "Compressed MusicXML document"),
+        (("cbz", "cbr", "cb7"), "Comic-book document"),
+    )
+    for extension in extensions
+}
+# Keep the existing labels for these two recognized package formats.
+ZIP_LEAF_FORMATS.update({"epub": "EPUB document", "jar": "JAR archive"})
 STREAM_ARCHIVE_TYPES = {
     "ZIP container": "ZIP archive",
     "7z archive": "7z archive",
@@ -291,8 +379,7 @@ class WorkBudget:
             total = self.expanded_bytes + amount
             if self.max_expanded_bytes is not None and total > self.max_expanded_bytes:
                 raise BudgetExceeded(
-                    "Expanded-data budget exceeded "
-                    f"({self.max_expanded_bytes:,} bytes)"
+                    f"Expanded-data budget exceeded ({self.max_expanded_bytes:,} bytes)"
                 )
             self.expanded_bytes = total
 
@@ -377,6 +464,250 @@ def extended_path(path: str | os.PathLike[str]) -> str:
 
 def normalized_key(path: str | os.PathLike[str]) -> str:
     return os.path.normcase(absolute_path(path))
+
+
+# Runtime safety -------------------------------------------------------------
+
+
+def resolved_path(path: str | os.PathLike[str]) -> str:
+    return os.path.normcase(regular_path(os.path.realpath(extended_path(path))))
+
+
+def path_within(path: str | os.PathLike[str], root: str) -> bool:
+    """Include junction/symlink and Windows mapped/UNC aliases of the root."""
+    candidate = resolved_path(path)
+    source = resolved_path(root)
+    try:
+        if os.path.commonpath((candidate, source)) == source:
+            return True
+    except ValueError:  # different Windows drives
+        pass
+    # A subst or mapped-drive alias can retain a different textual spelling.
+    while True:
+        try:
+            if os.path.samefile(extended_path(candidate), extended_path(source)):
+                return True
+        except OSError:
+            pass
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return False
+        candidate = parent
+
+
+def local_storage(path: str | os.PathLike[str]) -> bool:
+    """Reject remote working/output storage; remote input reads stay allowed."""
+    candidate = resolved_path(path)
+    if os.name == "nt":
+        import ctypes
+
+        drive, _ = os.path.splitdrive(candidate)
+        if drive.startswith("\\\\"):
+            return False
+        get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
+        get_drive_type.argtypes = [ctypes.c_wchar_p]
+        get_drive_type.restype = ctypes.c_uint
+        return get_drive_type(drive + "\\") in (2, 3, 6)  # removable, fixed, RAM
+    # Linux mount metadata is local; this does not contact a server.
+    network_types = {"cifs", "smb3", "nfs", "nfs4", "fuse.sshfs", "9p", "afs"}
+    best_mount = ""
+    filesystem = ""
+    with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
+        for line in mounts:
+            fields, details = line.rstrip().split(" - ", 1)
+            mount = re.sub(
+                r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields.split()[4]
+            )
+            if (
+                candidate == mount or candidate.startswith(mount.rstrip("/") + "/")
+            ) and len(mount) > len(best_mount):
+                best_mount, filesystem = mount, details.split()[0]
+    return filesystem not in network_types
+
+
+def validate_output_path(output: Path, root: str) -> None:
+    if path_within(output, root):
+        raise ValueError("Output must be outside the inspected folder. Use --output.")
+    if not local_storage(output.parent):
+        raise ValueError(
+            "Output must be on local storage; network inputs are supported."
+        )
+
+
+_protected_root: str | None = None
+
+
+def runtime_audit(event: str, arguments: tuple) -> None:
+    """Defence against accidental Python writes/network calls, not a sandbox."""
+    root = _protected_root
+    if root is None:
+        return
+    if event.startswith("socket.") or event in {
+        "urllib.Request",
+        "http.client.connect",
+        "webbrowser.open",
+        "winreg.ConnectRegistry",
+    }:
+        raise PermissionError("Network APIs are disabled during folder review.")
+
+    def protect(value, dir_fd=None):
+        if isinstance(value, int):
+            if os.name == "nt":
+                import ctypes
+                import msvcrt
+
+                buffer = ctypes.create_unicode_buffer(32_768)
+                get_name = ctypes.windll.kernel32.GetFinalPathNameByHandleW
+                get_name.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.c_wchar_p,
+                    ctypes.c_uint,
+                    ctypes.c_uint,
+                ]
+                get_name.restype = ctypes.c_uint
+                length = get_name(msvcrt.get_osfhandle(value), buffer, len(buffer), 0)
+                if not 0 < length < len(buffer):
+                    raise PermissionError(
+                        "Unresolved file descriptor mutation is disabled."
+                    )
+                value = buffer.value
+            else:
+                value = os.readlink(f"/proc/self/fd/{value}")
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        value = os.fsdecode(value)
+        if dir_fd is not None and dir_fd != -1 and not os.path.isabs(value):
+            value = os.path.join(os.readlink(f"/proc/self/fd/{dir_fd}"), value)
+        if path_within(value, root):
+            raise PermissionError(
+                "The inspected folder is read-only for folder review."
+            )
+        if not local_storage(value):
+            raise PermissionError("Working-file writes must stay on local storage.")
+
+    if event == "open":
+        filename, _mode, flags = arguments
+        # subprocess opens the local null device read/write for disconnected
+        # extractor stdin. It is a sink, not network or persistent storage.
+        if (
+            isinstance(filename, (str, bytes))
+            and os.fsdecode(filename).casefold() == os.devnull.casefold()
+        ):
+            return
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+            protect(filename)
+    elif event in {"os.remove", "os.rmdir"}:
+        protect(arguments[0], arguments[1])
+    elif event == "os.mkdir":
+        protect(arguments[0], arguments[2])
+    elif event in {"os.rename", "os.link"}:
+        protect(arguments[0], arguments[2])
+        protect(arguments[1], arguments[3])
+    elif event == "os.symlink":
+        protect(arguments[1], arguments[2])
+    elif event in {"os.chmod", "os.chown", "os.utime"}:
+        protect(arguments[0], arguments[-1])
+    elif event in {"os.truncate", "os.setxattr", "os.removexattr", "shutil.rmtree"}:
+        protect(arguments[0])
+    elif event == "subprocess.Popen":
+        executable, command, _, _ = arguments
+        # Windows audits the serialized command line and may leave executable
+        # unset even when Popen was given an argv list. Decode it with the OS
+        # parser, preserving quotes/spaces in extractor and member paths.
+        if os.name == "nt" and isinstance(command, str):
+            import ctypes
+
+            count = ctypes.c_int()
+            parse_command = ctypes.windll.shell32.CommandLineToArgvW
+            parse_command.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+            parse_command.restype = ctypes.POINTER(ctypes.c_wchar_p)
+            parsed = parse_command(command, ctypes.byref(count))
+            if not parsed:
+                raise PermissionError("Unable to validate archive backend command.")
+            try:
+                command = [parsed[index] for index in range(count.value)]
+            finally:
+                free = ctypes.windll.kernel32.LocalFree
+                free.argtypes = [ctypes.c_void_p]
+                free.restype = ctypes.c_void_p
+                free(parsed)
+        if not isinstance(command, (list, tuple)) or not command:
+            raise PermissionError(
+                "Only read-only archive backend commands are allowed."
+            )
+        executable = executable or command[0]
+        allowed = {
+            "7z": (("i",), ("e", "-so", "-bb0")),
+            "7za": (("i",), ("e", "-so", "-bb0")),
+            "7zz": (("i",), ("e", "-so", "-bb0")),
+            "unrar": (("-inul", "-?"), ("p", "-inul")),
+            "unar": (("-version",), ("-q", "-o", "-")),
+            "bsdtar": (("--version",), ("-x", "--to-stdout", "-f")),
+        }
+        name = os.path.basename(os.fsdecode(executable)).lower().removesuffix(".exe")
+        prefixes = allowed.get(name, ())
+        if not any(
+            tuple(command[1 : 1 + len(prefix)]) == prefix for prefix in prefixes
+        ):
+            raise PermissionError(
+                "Only read-only archive backend commands are allowed."
+            )
+        executable = shutil.which(executable)
+        if executable is None:
+            # Preserve rarfile's normal missing-tool detection and fallback.
+            raise FileNotFoundError(
+                errno.ENOENT, "The archive backend is unavailable.", command[0]
+            )
+        protect(executable)
+    elif event in {
+        "os.system",
+        "os.exec",
+        "os.posix_spawn",
+        "os.spawn",
+        "os.startfile",
+        "os.startfile/2",
+    }:
+        raise PermissionError(
+            "Executing inspected content or shell commands is disabled."
+        )
+
+
+sys.addaudithook(runtime_audit)
+
+
+@contextmanager
+def safe_runtime(root: str, output: Path):
+    """Keep all application work files outside the read-only input tree."""
+    global _protected_root
+    if _protected_root is not None:
+        raise RuntimeError("Concurrent scans in one Python process are not supported.")
+    validate_output_path(output, root)
+    if getattr(sys, "frozen", False) and path_within(sys._MEIPASS, root):
+        raise ValueError(
+            "The inspected folder contains the running temporary runtime. Select a narrower input folder."
+        )
+    previous_tempdir = tempfile.tempdir
+    _protected_root = root
+    try:
+        # gettempdir() may probe candidate folders by creating a file. Guard
+        # those probes too, including when TEMP/TMP points into the input.
+        try:
+            workspace_parent = tempfile.gettempdir()
+        except FileNotFoundError:
+            workspace_parent = str(output.parent)
+        if path_within(workspace_parent, root) or not local_storage(workspace_parent):
+            workspace_parent = str(output.parent)
+        with tempfile.TemporaryDirectory(
+            prefix="folder-review-work-", dir=extended_path(workspace_parent)
+        ) as workspace:
+            tempfile.tempdir = workspace
+            try:
+                yield
+            finally:
+                tempfile.tempdir = previous_tempdir
+    finally:
+        tempfile.tempdir = previous_tempdir
+        _protected_root = None
 
 
 def split_archive_path(name: str) -> tuple[str, ...]:
@@ -677,17 +1008,44 @@ def classify_zip_names(names: list[str]) -> str:
             else "PowerPoint presentation (PPTX)"
         )
 
+    if package_markers <= normalized and "visio/document.xml" in normalized:
+        return "Visio document (ZIP package)"
+
     if "meta-inf/manifest.mf" in normalized:
         return "JAR archive"
     if "meta-inf/container.xml" in normalized and "mimetype" in normalized:
         return "EPUB document"
+    if "meta-inf/manifest.xml" in normalized and "mimetype" in normalized:
+        return "OpenDocument package"
+    if package_markers <= normalized:
+        return "Open Packaging Conventions package"
     return "ZIP archive"
 
 
 def classify_zip_path(file_path: str) -> str:
     try:
         with zipfile.ZipFile(extended_path(file_path)) as archive:
-            return classify_zip_names(archive.namelist())
+            file_type = classify_zip_names(archive.namelist())
+            if extension_of(file_path) not in ARCHIVE_EXTENSIONS:
+                hint = ZIP_LEAF_FORMATS.get(extension_of(file_path))
+                # Preserve authoritative package-family detection even when
+                # a filename claims another format. Hints refine a recognized
+                # family or label otherwise unrecognized ZIP-based leaves.
+                if file_type == "ZIP archive":
+                    return hint or "ZIP container (leaf file)"
+                if hint and (
+                    file_type == "Open Packaging Conventions package"
+                    or (
+                        file_type == "Visio document (ZIP package)"
+                        and hint.startswith("Visio ")
+                    )
+                    or (
+                        file_type == "OpenDocument package"
+                        and hint.startswith("OpenDocument ")
+                    )
+                ):
+                    return hint
+            return file_type
     except (OSError, zipfile.BadZipFile, RuntimeError):
         return "ZIP container (unreadable)"
 
@@ -864,8 +1222,7 @@ def scan_tree(
                 stats.folders += 1
                 stats.skipped_folders += int(skipped_folder)
                 stats.skipped_entries += sum(
-                    diagnostic.stage == "entry metadata"
-                    for diagnostic in diagnostics
+                    diagnostic.stage == "entry metadata" for diagnostic in diagnostics
                 )
                 stats.diagnostics.extend(diagnostics)
                 all_files.extend(files)
@@ -907,8 +1264,7 @@ def archive_row(
         error,
         bom=bom,
         integrity_status=(
-            integrity_status
-            or (INTEGRITY_ERROR if error else INTEGRITY_NOT_VERIFIED)
+            integrity_status or (INTEGRITY_ERROR if error else INTEGRITY_NOT_VERIFIED)
         ),
         properties=node.properties,
     )
@@ -933,6 +1289,24 @@ def archive_temp_directory():
 
 def raw_archive_type(data: bytes) -> str | None:
     return STREAM_ARCHIVE_TYPES.get(detect_magic(data))
+
+
+def expandable_archive_type(data: bytes, name: str) -> str | None:
+    if extension_of(name) not in ARCHIVE_EXTENSIONS:
+        return None
+    return raw_archive_type(data)
+
+
+def should_expand_archive(file_type: str, name: str) -> bool:
+    return file_type in ARCHIVE_TYPES and extension_of(name) in ARCHIVE_EXTENSIONS
+
+
+def member_content_type(data: bytes, name: str) -> str:
+    """Label leaf members without staging or opening their internal package."""
+    file_type = detect_magic(data)
+    if file_type == "ZIP container" and extension_of(name) not in ARCHIVE_EXTENSIONS:
+        return ZIP_LEAF_FORMATS.get(extension_of(name), "ZIP container (leaf file)")
+    return file_type
 
 
 def read_counted(stream, size: int, budget: WorkBudget) -> bytes:
@@ -980,7 +1354,7 @@ def inspect_member_stream(
             )
         ]
 
-    archive_type = raw_archive_type(head)
+    archive_type = expandable_archive_type(head, levels[-1])
     if archive_type is None:
         error = None
         integrity_status = INTEGRITY_VERIFIED
@@ -994,7 +1368,7 @@ def inspect_member_stream(
                 logical_path,
                 levels,
                 size,
-                detect_magic(head),
+                member_content_type(head, levels[-1]),
                 True,
                 error,
                 bom=detect_bom(head) or BOM_NOT_PRESENT,
@@ -1056,9 +1430,7 @@ def inspect_member_stream(
 
 def archive_info_size(info) -> int:
     return int(
-        getattr(info, "file_size", None)
-        or getattr(info, "uncompressed", None)
-        or 0
+        getattr(info, "file_size", None) or getattr(info, "uncompressed", None) or 0
     )
 
 
@@ -1243,17 +1615,14 @@ class MemberCaptureIO(Py7zIO):
         total_after = self.total_written + len(raw)
         archive_probe_ready = len(self.head) >= 8 or total_after >= self.expected_size
         if archive_probe_ready:
-            self.archive_type = raw_archive_type(bytes(self.head))
+            self.archive_type = expandable_archive_type(bytes(self.head), self.filename)
             if self.archive_type and self.expected_size <= MAX_NESTED_ARCHIVE_SIZE:
                 self.temp_path = make_temp_path(self.temp_dir, self.filename)
                 self.output = open(self.temp_path, "wb")  # noqa: SIM115
                 self.output.write(self.head)
                 self.output.write(remainder)
                 self.mode = "archive"
-            elif (
-                len(self.head) >= MAGIC_READ_SIZE
-                or total_after >= self.expected_size
-            ):
+            elif len(self.head) >= MAGIC_READ_SIZE or total_after >= self.expected_size:
                 self.mode = "head"
                 self.oversized = bool(
                     self.archive_type and self.expected_size > MAX_NESTED_ARCHIVE_SIZE
@@ -1415,8 +1784,8 @@ def expand_7z(
                 content_type = "Empty file"
                 bom = BOM_NOT_PRESENT
             elif product is not None and product.head:
-                content_type = product.archive_type or detect_magic(
-                    bytes(product.head)
+                content_type = product.archive_type or member_content_type(
+                    bytes(product.head), info.filename
                 )
                 bom = detect_bom(bytes(product.head)) or BOM_NOT_PRESENT
             else:
@@ -1491,7 +1860,7 @@ def expand_7z(
                     logical_path,
                     levels,
                     size,
-                    detect_magic(bytes(product.head)),
+                    member_content_type(bytes(product.head), info.filename),
                     True,
                     bom=detect_bom(bytes(product.head)) or BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
@@ -1616,7 +1985,7 @@ def process_archive_node(
         file_type, bom = inspect_file(node.source_path)
     else:
         file_type, bom = known_file_type, known_bom
-    if file_type not in ARCHIVE_TYPES:
+    if not should_expand_archive(file_type, node.levels[-1]):
         error = None
         if file_type == "Unreadable":
             error = "File could not be read"
@@ -1632,9 +2001,7 @@ def process_archive_node(
                     INTEGRITY_ERROR
                     if error
                     else (
-                        INTEGRITY_VERIFIED
-                        if node.depth > 0
-                        else INTEGRITY_NOT_VERIFIED
+                        INTEGRITY_VERIFIED if node.depth > 0 else INTEGRITY_NOT_VERIFIED
                     )
                 ),
             )
@@ -1682,7 +2049,7 @@ def process_file(
         ]
 
     file_type, bom = inspect_file(item.path)
-    if file_type in ARCHIVE_TYPES:
+    if should_expand_archive(file_type, item.levels[-1]):
         with (
             HEAVY_ARCHIVE_SLOTS,
             archive_temp_directory() as temp_dir,
@@ -1837,6 +2204,8 @@ def write_workbook(
     output_path: Path,
     root_folder: str,
     report: RunReport | None = None,
+    *,
+    full_metadata: bool = False,
 ) -> None:
     if len(rows) > EXCEL_MAX_DATA_ROWS:
         raise ValueError(
@@ -1846,7 +2215,7 @@ def write_workbook(
 
     max_level = max((len(row.levels) for row in rows), default=0)
     level_headers = [f"Уровень {index}" for index in range(1, max_level + 1)]
-    data_headers = level_headers + [
+    all_data_headers = level_headers + [
         "Уровень листа",
         "Полный путь к файлу",
         "Имя файла",
@@ -1892,6 +2261,12 @@ def write_workbook(
         "В архиве",
         "Ошибка",
     ]
+    visible_columns = [
+        index
+        for index, header in enumerate(all_data_headers)
+        if full_metadata or header not in ADVANCED_METADATA_HEADERS
+    ]
+    data_headers = [all_data_headers[index] for index in visible_columns]
     headers = ["№пп", *data_headers, "last"]
 
     wb = Workbook(write_only=True)
@@ -2122,7 +2497,9 @@ def write_workbook(
             )
         )
 
-        for header, value in zip(data_headers, values):
+        for header, value in zip(
+            data_headers, (values[index] for index in visible_columns)
+        ):
             is_text = isinstance(value, str)
             if is_text:
                 value = excel_text(value)
@@ -2416,6 +2793,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
     parser.add_argument("--output", help="Override the local XLSX output path")
     parser.add_argument(
+        "--full-metadata",
+        action="store_true",
+        help="Include diagnostic link, permission, Windows-attribute and st_* columns",
+    )
+    parser.add_argument(
         "--workers",
         type=worker_count,
         default=DEFAULT_WORKERS,
@@ -2470,6 +2852,33 @@ def run() -> int:
     if not os.path.isdir(extended_path(output_path.parent)):
         raise ValueError(f"Output folder is unavailable: {output_path.parent}")
 
+    if not local_storage(script_dir):
+        raise ValueError("Copy the tool to a local folder before running it.")
+    try:
+        validate_output_path(output_path, root_folder)
+    except ValueError:
+        if args.output or not sys.stdin.isatty():
+            raise
+        entered = (
+            input("Local XLSX output path outside the inspected folder: ")
+            .strip()
+            .strip('"')
+        )
+        if not entered:
+            raise ValueError("No output path was entered.")
+        output_path = Path(absolute_path(entered))
+        if output_path.suffix.lower() != ".xlsx" or not os.path.isdir(
+            extended_path(output_path.parent)
+        ):
+            raise ValueError("Enter an .xlsx path in an existing local folder.")
+
+    with safe_runtime(root_folder, output_path):
+        return scan_and_report(args, root_folder, output_path)
+
+
+def scan_and_report(
+    args: argparse.Namespace, root_folder: str, output_path: Path
+) -> int:
     configure_rar_backend()
     started = time.monotonic()
     started_at = local_now()
@@ -2494,9 +2903,7 @@ def run() -> int:
         )
 
     max_expanded_bytes = (
-        None
-        if args.max_expanded_gib == 0
-        else int(args.max_expanded_gib * (1024**3))
+        None if args.max_expanded_gib == 0 else int(args.max_expanded_gib * (1024**3))
     )
     max_archive_seconds = (
         None if args.max_archive_seconds == 0 else args.max_archive_seconds
@@ -2515,10 +2922,7 @@ def run() -> int:
 
     errors = sum(row.error is not None for row in rows)
     partial = bool(
-        stats.skipped_folders
-        or stats.skipped_entries
-        or stats.diagnostics
-        or errors
+        stats.skipped_folders or stats.skipped_entries or stats.diagnostics or errors
     )
     report = RunReport(
         status="PARTIAL" if partial else "COMPLETE",
@@ -2535,7 +2939,9 @@ def run() -> int:
         max_rows=args.max_rows,
     )
     print("Writing Excel workbook...")
-    write_workbook(rows, output_path, root_folder, report)
+    write_workbook(
+        rows, output_path, root_folder, report, full_metadata=args.full_metadata
+    )
 
     elapsed = time.monotonic() - started
     print(

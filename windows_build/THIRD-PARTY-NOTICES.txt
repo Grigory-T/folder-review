@@ -1,0 +1,10 @@
+Folder Review uses Python, olefile, openpyxl, py7zr, rarfile and their dependencies.
+Their license texts are included in third-party-licenses/ in the release folder.
+
+This distribution includes parts of 7-Zip 26.04 (7z.exe and 7z.dll).
+7-Zip is licensed under the GNU LGPL with additional BSD-licensed code and
+the unRAR restriction. See 7zip-license.txt and https://www.7-zip.org/.
+7-Zip source code is available from https://www.7-zip.org/.
+
+PyInstaller's bootloader is distributed under the GPL with a distribution
+exception permitting bundled applications. See third-party-licenses/.

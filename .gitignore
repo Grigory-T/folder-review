@@ -7,3 +7,6 @@ __pycache__/
 Thumbs.db
 folder-review.xlsx
 .*.tmp.xlsx
+.build/
+.build-venv/
+dist/

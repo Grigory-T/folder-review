@@ -136,7 +136,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(rows[0].content_type, "Text (UTF-8 / ASCII)")
         self.assertIsNone(rows[0].error)
 
-    def test_archive_detection_uses_content_not_extension(self) -> None:
+    def test_opaque_suffix_does_not_expand_archive_content(self) -> None:
         archive = self.make_zip(
             self.root / "archive.bin",
             {"Folder/leaf.txt": b"leaf"},
@@ -144,14 +144,17 @@ class FolderReviewTests(unittest.TestCase):
 
         rows = self.inspect(archive)
 
-        self.assertEqual([row.leaf_name for row in rows], ["leaf.txt"])
-        self.assertTrue(rows[0].full_path.endswith(r"archive.bin::Folder\leaf.txt"))
+        self.assertEqual([row.leaf_name for row in rows], ["archive.bin"])
+        self.assertEqual(rows[0].content_type, "ZIP container (leaf file)")
+        self.assertFalse(rows[0].in_archive == "да")
+        self.assertIsNone(rows[0].error)
 
     def test_ordinary_zip_with_office_like_folder_is_expanded(self) -> None:
         archive = self.make_zip(
-            self.root / "ordinary.zip",
+            self.root / "ordinary.ZIP",
             {
                 "word/notes.txt": b"not an Office package",
+                "visio/document.xml": b"<not-a-package/>",
                 "other.txt": b"must also be inventoried",
             },
         )
@@ -160,15 +163,172 @@ class FolderReviewTests(unittest.TestCase):
 
         self.assertEqual(
             {row.leaf_name for row in rows},
-            {"notes.txt", "other.txt"},
+            {"notes.txt", "document.xml", "other.txt"},
         )
         self.assertTrue(all(row.error is None for row in rows))
         self.assertTrue(
             all(
-                row.integrity_status == folder_review.INTEGRITY_VERIFIED
-                for row in rows
+                row.integrity_status == folder_review.INTEGRITY_VERIFIED for row in rows
             )
         )
+
+    def test_zip_based_leaf_formats_remain_one_row_everywhere(self) -> None:
+        package = self.make_zip(
+            self.root / "package.zip",
+            {
+                "[Content_Types].xml": b"<Types/>",
+                "_rels/.rels": b"<Relationships/>",
+                "visio/document.xml": b"<VisioDocument/>",
+                "visio/masters/_rels/master43.xml.rels": b"<Relationships/>",
+                "visio/media/image2.emf": bytes(100),
+                "embedded/hidden.zip": b"PK\x03\x04bad",
+            },
+        )
+        formats = {*folder_review.ZIP_LEAF_FORMATS, "unknown-format"}
+        members = {}
+        expected_types = {}
+        for extension in sorted(formats):
+            name = f"document.{extension.upper()}"
+            path = self.root / name
+            path.write_bytes(package.read_bytes())
+            rows = self.inspect(path)
+            self.assertEqual(len(rows), 1, name)
+            self.assertEqual(rows[0].leaf_name, name)
+            self.assertIsNone(rows[0].error, name)
+            expected_types[name] = rows[0].content_type
+            members[name] = path
+        for suffix, create in (("zip", self.make_zip), ("7z", self.make_7z)):
+            outer = create(self.root / f"outer.{suffix.upper()}", members)
+            with mock.patch.object(
+                folder_review, "make_temp_path", wraps=folder_review.make_temp_path
+            ) as stage:
+                rows = self.inspect(outer)
+            self.assertEqual({row.leaf_name for row in rows}, set(members))
+            self.assertEqual(len(rows), len(members))
+            for row in rows:
+                self.assertIsNone(row.error, row.leaf_name)
+                self.assertEqual(row.integrity_status, folder_review.INTEGRITY_VERIFIED)
+                if row.extension in {"vsdx", "vsdm", "vstx", "vstm", "vssx", "vssm"}:
+                    self.assertEqual(row.content_type, expected_types[row.leaf_name])
+                self.assertEqual(row.full_path.count("::"), 1)
+            stage.assert_not_called()
+
+    def test_packaged_documents_renamed_zip_are_still_leaves(self) -> None:
+        for name, parts in (
+            ("visio", {"visio/document.xml": b"<VisioDocument/>"}),
+            (
+                "open-document",
+                {
+                    "mimetype": b"application/vnd.oasis.opendocument.text",
+                    "META-INF/manifest.xml": b"<manifest/>",
+                },
+            ),
+            ("other-opc", {"FixedDocumentSequence.fdseq": b"<FixedDocumentSequence/>"}),
+        ):
+            members = {
+                "[Content_Types].xml": b"<Types/>",
+                "_rels/.rels": b"<Relationships/>",
+                **parts,
+            }
+            path = self.make_zip(self.root / f"{name}.zip", members)
+            outer = self.make_7z(self.root / f"{name}-outer.7z", {path.name: path})
+            for source in (path, outer):
+                rows = self.inspect(source)
+                self.assertEqual([row.leaf_name for row in rows], [path.name])
+                self.assertIsNone(rows[0].error)
+
+    def test_known_package_content_takes_priority_over_misleading_suffix(self) -> None:
+        for suffix, part, expected in (
+            ("xlsx", "word/document.xml", "Word document (DOCX)"),
+            ("docx", "xl/workbook.xml", "Excel workbook (XLSX)"),
+            ("xlsx", "visio/document.xml", "Visio document (ZIP package)"),
+        ):
+            path = self.make_zip(
+                self.root / f"misnamed-{part.split('/')[0]}.{suffix}",
+                {
+                    "[Content_Types].xml": b"<Types/>",
+                    "_rels/.rels": b"<Relationships/>",
+                    part: b"<document/>",
+                },
+            )
+            rows = self.inspect(path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].content_type, expected)
+            self.assertIsNone(rows[0].error)
+
+    def test_archive_suffix_does_not_override_file_content(self) -> None:
+        for suffix in ("zip", "rar", "7z"):
+            path = self.root / f"text.{suffix}"
+            path.write_bytes(b"ordinary text")
+            rows = self.inspect(path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].content_type, "Text (UTF-8 / ASCII)")
+            self.assertIsNone(rows[0].error)
+
+    def test_rar_leaf_packages_remain_leaves(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "windows" / "leaf-packages.rar"
+        archive = self.root / "leaf-packages.rar"
+        archive.write_bytes(fixture.read_bytes())
+        expected = {
+            f"document.{extension.upper()}"
+            for extension in folder_review.ZIP_LEAF_FORMATS
+        }
+        expected.update({"document.UNKNOWN-FORMAT", "document.zip"})
+        for source in (
+            archive,
+            self.make_zip(self.root / "wrapped.zip", {archive.name: archive}),
+            self.make_7z(self.root / "wrapped.7z", {archive.name: archive}),
+        ):
+            rows = self.inspect(source)
+            self.assertEqual({row.leaf_name for row in rows}, expected)
+            self.assertEqual(len(rows), len(expected))
+            self.assertFalse(
+                any(row.error for row in rows), [row.error for row in rows if row.error]
+            )
+            self.assertTrue(
+                all(
+                    row.integrity_status == folder_review.INTEGRITY_VERIFIED
+                    for row in rows
+                )
+            )
+        comic = self.root / "comic.cbr"
+        comic.write_bytes(fixture.read_bytes())
+        rows = self.inspect(comic)
+        self.assertEqual([row.leaf_name for row in rows], ["comic.cbr"])
+        self.assertIsNone(rows[0].error)
+
+    def test_leaf_retains_containing_zip_crc_errors(self) -> None:
+        archive = self.make_zip(
+            self.root / "bad-parent.zip", {"diagram.vsdx": b"PK\x03\x04" + b"A" * 65536}
+        )
+        data = bytearray(archive.read_bytes())
+        central = data.index(b"PK\x01\x02")
+        bad_crc = struct.unpack_from("<I", data, central + 16)[0] ^ 1
+        struct.pack_into("<I", data, central + 16, bad_crc)
+        struct.pack_into("<I", data, 14, bad_crc)
+        archive.write_bytes(data)
+        rows = self.inspect(archive)
+        self.assertEqual([row.leaf_name for row in rows], ["diagram.vsdx"])
+        self.assertIsNotNone(rows[0].error)
+        self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
+
+    def test_leaf_member_does_not_consume_archive_depth_or_staging_limit(self) -> None:
+        import io
+
+        content = b"PK\x03\x04document bytes"
+        with folder_review.archive_temp_directory() as directory:
+            rows = folder_review.inspect_member_stream(
+                io.BytesIO(content),
+                size=folder_review.MAX_NESTED_ARCHIVE_SIZE + 1,
+                logical_path="outer.zip::document.vsdx",
+                levels=("outer.zip", "document.vsdx"),
+                parent_depth=folder_review.MAX_ARCHIVE_DEPTH - 1,
+                temp_dir=directory,
+                budget=folder_review.WorkBudget(),
+            )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].content_type, "Visio drawing (VSDX)")
+        self.assertIsNone(rows[0].error)
 
     def test_bad_zip_crc_is_reported(self) -> None:
         archive_path = self.root / "bad-crc.zip"
@@ -265,13 +425,15 @@ class FolderReviewTests(unittest.TestCase):
         )
 
     def test_encrypted_rar_headers_produce_partial_workbook(self) -> None:
+        input_root = self.root / "input"
+        input_root.mkdir()
         fixture = (
             Path(__file__).parent
             / "fixtures"
             / "windows"
             / "rar5-encrypted-headers.rar"
         )
-        archive_path = self.root / "encrypted-headers.rar"
+        archive_path = input_root / "encrypted-headers.rar"
         archive_path.write_bytes(fixture.read_bytes())
         output = self.root / "encrypted-headers.xlsx"
 
@@ -295,7 +457,7 @@ class FolderReviewTests(unittest.TestCase):
                 [
                     "folder_review.py",
                     "--root",
-                    str(self.root),
+                    str(input_root),
                     "--output",
                     str(output),
                 ],
@@ -308,9 +470,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         workbook = load_workbook(output, read_only=True, data_only=True)
         try:
-            status_values = list(
-                workbook["scan_status"].iter_rows(values_only=True)
-            )
+            status_values = list(workbook["scan_status"].iter_rows(values_only=True))
             self.assertIn(("Статус", "PARTIAL"), status_values)
             self.assertIn(("Строки с ошибками", 1), status_values)
         finally:
@@ -439,7 +599,7 @@ class FolderReviewTests(unittest.TestCase):
         ]
         output = self.root / "folder-review.xlsx"
 
-        folder_review.write_workbook(rows, output, "sample")
+        folder_review.write_workbook(rows, output, "sample", full_metadata=True)
 
         workbook = load_workbook(output, read_only=True, data_only=False)
         try:
@@ -499,9 +659,7 @@ class FolderReviewTests(unittest.TestCase):
             self.assertIsNone(values[columns["Проверка целостности"]])
             self.assertEqual(values[columns["Тип элемента"]], "Файл")
             self.assertEqual(values[columns["Скрытый"]], "нет")
-            self.assertEqual(
-                values[columns["Права доступа"]], properties.permissions
-            )
+            self.assertEqual(values[columns["Права доступа"]], properties.permissions)
             self.assertEqual(values[columns["st_mode"]], properties.mode)
             self.assertEqual(values[columns["st_ino"]], properties.inode)
             self.assertIsNotNone(values[columns["Время последнего изменения файла"]])
@@ -691,8 +849,7 @@ class FolderReviewTests(unittest.TestCase):
         ole_header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + bytes(512)
         lnk_header = (
             b"\x4c\x00\x00\x00\x01\x14\x02\x00\x00\x00"
-            b"\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46"
-            + bytes(32)
+            b"\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46" + bytes(32)
         )
         archive = self.make_zip(
             self.root / "windows-objects.zip",
@@ -771,9 +928,11 @@ class FolderReviewTests(unittest.TestCase):
             folder_review.validate_platform()
 
     def test_partial_scan_writes_diagnostics_and_returns_two(self) -> None:
+        input_root = self.root / "input"
+        input_root.mkdir()
         output = self.root / "partial.xlsx"
         diagnostic = folder_review.Diagnostic(
-            str(self.root / "unavailable"),
+            str(input_root / "unavailable"),
             "folder enumeration",
             "PermissionError: denied",
         )
@@ -789,7 +948,7 @@ class FolderReviewTests(unittest.TestCase):
                 [
                     "folder_review.py",
                     "--root",
-                    str(self.root),
+                    str(input_root),
                     "--output",
                     str(output),
                 ],
@@ -810,7 +969,7 @@ class FolderReviewTests(unittest.TestCase):
                 any(
                     len(row) >= 3
                     and row[0] == "folder enumeration"
-                    and row[1] == str(self.root / "unavailable")
+                    and row[1] == str(input_root / "unavailable")
                     and "PermissionError" in row[2]
                     for row in values
                 )
@@ -819,8 +978,10 @@ class FolderReviewTests(unittest.TestCase):
             workbook.close()
 
     def test_physical_row_limit_writes_partial_workbook(self) -> None:
+        input_root = self.root / "input"
+        input_root.mkdir()
         for number in range(3):
-            (self.root / f"file-{number}.txt").write_text(
+            (input_root / f"file-{number}.txt").write_text(
                 "plain text",
                 encoding="utf-8",
             )
@@ -832,7 +993,7 @@ class FolderReviewTests(unittest.TestCase):
                 [
                     "folder_review.py",
                     "--root",
-                    str(self.root),
+                    str(input_root),
                     "--output",
                     str(output),
                     "--max-rows",
@@ -853,9 +1014,7 @@ class FolderReviewTests(unittest.TestCase):
                 sum(1 for _ in inventory.iter_rows(min_row=7, values_only=True)),
                 2,
             )
-            status_values = list(
-                workbook["scan_status"].iter_rows(values_only=True)
-            )
+            status_values = list(workbook["scan_status"].iter_rows(values_only=True))
             self.assertIn(("Статус", "PARTIAL"), status_values)
             self.assertIn(("Физические элементы", 3), status_values)
             self.assertIn(("Логические строки", 2), status_values)
@@ -863,7 +1022,7 @@ class FolderReviewTests(unittest.TestCase):
                 any(
                     len(row) >= 3
                     and row[0] == "row limit"
-                    and row[1] == str(self.root)
+                    and row[1] == str(input_root)
                     and "1 physical items omitted" in row[2]
                     for row in status_values
                 )
@@ -872,6 +1031,8 @@ class FolderReviewTests(unittest.TestCase):
             workbook.close()
 
     def test_interactive_first_run_prompts_for_folder(self) -> None:
+        input_root = self.root / "input"
+        input_root.mkdir()
         output = self.root / "prompted.xlsx"
         with (
             mock.patch.object(
@@ -880,7 +1041,7 @@ class FolderReviewTests(unittest.TestCase):
                 ["folder_review.py", "--output", str(output)],
             ),
             mock.patch.object(folder_review.sys.stdin, "isatty", return_value=True),
-            mock.patch("builtins.input", return_value=str(self.root)),
+            mock.patch("builtins.input", return_value=str(input_root)),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             exit_code = folder_review.run()
@@ -893,6 +1054,171 @@ class FolderReviewTests(unittest.TestCase):
             folder_review.split_archive_path(r"First/Second\Third/file.txt"),
             ("First", "Second", "Third", "file.txt"),
         )
+
+    def test_default_columns_match_full_metadata_values(self) -> None:
+        source = self.root / ".hidden.pdf"
+        source.write_bytes(b"%PDF-1.4\n")
+        rows = self.inspect(source)
+        reports = []
+        for full in (False, True):
+            output = self.root / f"metadata-{full}.xlsx"
+            folder_review.write_workbook(rows, output, "sample", full_metadata=full)
+            workbook = load_workbook(output, read_only=True, data_only=False)
+            try:
+                sheet = workbook["folder_review"]
+                headers = next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+                cells = next(sheet.iter_rows(min_row=7, max_row=7))
+                reports.append(
+                    {
+                        header: (cell.value, cell.data_type, cell.number_format)
+                        for header, cell in zip(headers, cells)
+                        if header
+                    }
+                )
+            finally:
+                workbook.close()
+        compact, full = reports
+        self.assertEqual(
+            set(full) - set(compact), folder_review.ADVANCED_METADATA_HEADERS
+        )
+        self.assertIn("Скрытый", compact)
+        self.assertEqual(compact, {key: full[key] for key in compact})
+
+    def test_runtime_denies_network_and_source_mutations(self) -> None:
+        import socket
+
+        input_root = self.root / "input"
+        input_root.mkdir()
+        source = input_root / "data.txt"
+        source.write_bytes(b"unchanged")
+        before = source.stat()
+        output = self.root / "report.xlsx"
+        with folder_review.safe_runtime(str(input_root), output):
+            null_descriptor = os.open(os.devnull, os.O_RDWR)
+            os.close(null_descriptor)
+            operations = [
+                lambda: source.write_bytes(b"changed"),
+                source.unlink,
+                lambda: source.rename(self.root / "moved.txt"),
+                lambda: (input_root / "new").mkdir(),
+                lambda: source.chmod(0o600),
+                lambda: os.utime(source, (1, 1)),
+                lambda: os.truncate(source, 0),
+                lambda: os.link(source, self.root / "hard-link.txt"),
+                lambda: socket.socket(),
+                lambda: socket.getaddrinfo("example.invalid", 443),
+                lambda: subprocess.run(
+                    [folder_review.sys.executable, "--version"], check=True
+                ),
+                lambda: subprocess.run(["7z", "e", str(source)], check=True),
+            ]
+            for operation in operations:
+                with (
+                    self.subTest(operation=operations.index(operation)),
+                    self.assertRaises(PermissionError),
+                ):
+                    operation()
+            output.write_bytes(b"allowed outside input")
+            with mock.patch.object(folder_review.shutil, "which", return_value=None):
+                self.assertFalse(
+                    folder_review.rarfile.ToolSetup(
+                        folder_review.rarfile.UNRAR_CONFIG
+                    ).check()
+                )
+            with (
+                mock.patch.object(
+                    folder_review.shutil, "which", return_value=str(source)
+                ),
+                self.assertRaisesRegex(PermissionError, "read-only"),
+            ):
+                subprocess.run(["7z", "i"], check=True)
+            with (
+                mock.patch.object(folder_review, "local_storage", return_value=False),
+                self.assertRaisesRegex(PermissionError, "local storage"),
+            ):
+                (self.root / "remote-work.tmp").write_bytes(b"forbidden")
+        self.assertEqual(source.read_bytes(), b"unchanged")
+        self.assertEqual(source.stat().st_mtime_ns, before.st_mtime_ns)
+        self.assertEqual(source.stat().st_mode, before.st_mode)
+        self.assertEqual(list(input_root.iterdir()), [source])
+
+    def test_output_inside_input_and_aliases_are_rejected(self) -> None:
+        input_root = self.root / "input"
+        input_root.mkdir()
+        with (
+            self.assertRaisesRegex(ValueError, "outside the inspected folder"),
+            folder_review.safe_runtime(str(input_root), input_root / "report.xlsx"),
+        ):
+            self.fail("Unsafe output was accepted")
+        alias = self.root / "alias"
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd.exe", "/c", "mklink", "/J", str(alias), str(input_root)],
+                check=True,
+                capture_output=True,
+            )
+        else:
+            alias.symlink_to(input_root, target_is_directory=True)
+        try:
+            with self.assertRaises(ValueError):
+                folder_review.validate_output_path(
+                    alias / "report.xlsx", str(input_root)
+                )
+            with (
+                folder_review.safe_runtime(str(input_root), self.root / "outside.xlsx"),
+                self.assertRaises(PermissionError),
+            ):
+                (alias / "changed.txt").write_bytes(b"forbidden")
+        finally:
+            if os.name == "nt":
+                alias.rmdir()
+            else:
+                alias.unlink()
+        self.assertEqual(list(input_root.iterdir()), [])
+
+    def test_temporary_files_stay_outside_input_and_are_cleaned(self) -> None:
+        input_root = self.root / "input"
+        input_root.mkdir()
+        original_tempdir = tempfile.tempdir
+        with mock.patch.object(tempfile, "tempdir", str(input_root)):
+            with folder_review.safe_runtime(str(input_root), self.root / "output.xlsx"):
+                workspace = Path(tempfile.gettempdir())
+                self.assertFalse(folder_review.path_within(workspace, str(input_root)))
+                with tempfile.TemporaryFile() as handle:
+                    handle.write(b"local work")
+                with folder_review.archive_temp_directory() as directory:
+                    (Path(directory) / "work.bin").write_bytes(b"temporary")
+            self.assertFalse(workspace.exists())
+            self.assertEqual(tempfile.tempdir, str(input_root))
+        self.assertEqual(tempfile.tempdir, original_tempdir)
+        self.assertEqual(list(input_root.iterdir()), [])
+
+    def test_temp_directory_discovery_cannot_write_to_input(self) -> None:
+        input_root = self.root / "input"
+        input_root.mkdir()
+        probe = input_root / "probe.tmp"
+        with (
+            mock.patch.object(
+                tempfile, "gettempdir", side_effect=lambda: probe.write_bytes(b"probe")
+            ),
+            self.assertRaises(PermissionError),
+            folder_review.safe_runtime(str(input_root), self.root / "output.xlsx"),
+        ):
+            self.fail("Input was allowed as a writable temp candidate")
+        self.assertFalse(probe.exists())
+        self.assertIsNone(folder_review._protected_root)
+        with (
+            mock.patch.object(tempfile, "tempdir", None),
+            mock.patch.dict(
+                os.environ,
+                {name: str(input_root) for name in ("TMPDIR", "TEMP", "TMP")},
+            ),
+            folder_review.safe_runtime(str(input_root), self.root / "output.xlsx"),
+        ):
+            self.assertFalse(
+                folder_review.path_within(tempfile.gettempdir(), str(input_root))
+            )
+        self.assertEqual(list(input_root.iterdir()), [])
 
     def test_long_physical_archive_and_output_paths(self) -> None:
         deep_folder = str(self.root)
