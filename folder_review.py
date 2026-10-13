@@ -1069,13 +1069,22 @@ def archive_member_error_rows(
 ) -> list[ResultRow]:
     rows = []
     for info in infos:
-        parts = split_archive_path(info.filename)
-        if not parts:
+        location = archive_member_location(node, info.filename)
+        if location is None:
+            rows.append(
+                unusable_archive_member_path_row(
+                    node,
+                    info.filename,
+                    archive_info_size(info),
+                    reason,
+                )
+            )
             continue
+        levels, logical_path = location
         rows.append(
             make_row(
-                node.logical_path + "::" + "\\".join(parts),
-                node.levels + parts,
+                logical_path,
+                levels,
                 archive_info_size(info),
                 "Not inspected",
                 True,
@@ -1084,6 +1093,36 @@ def archive_member_error_rows(
             )
         )
     return rows
+
+
+def archive_member_location(
+    node: ArchiveNode,
+    filename: str,
+) -> tuple[tuple[str, ...], str] | None:
+    parts = split_archive_path(filename)
+    if not parts:
+        return None
+    return node.levels + parts, node.logical_path + "::" + "\\".join(parts)
+
+
+def unusable_archive_member_path_row(
+    node: ArchiveNode,
+    filename: str,
+    size: int,
+    preceding_error: str | None = None,
+) -> ResultRow:
+    displayed_name = filename or "<empty member name>"
+    path_error = f"Archive member path has no usable components: {filename!r}"
+    error = f"{preceding_error}; {path_error}" if preceding_error else path_error
+    return make_row(
+        node.logical_path + "::" + displayed_name,
+        node.levels + ("<unusable archive member path>",),
+        size,
+        "Not inspected",
+        True,
+        error,
+        integrity_status=INTEGRITY_ERROR,
+    )
 
 
 def prepare_archive_members(
@@ -1126,11 +1165,17 @@ def expand_zip(
                 return limit_rows
 
             for info in infos:
-                parts = split_archive_path(info.filename)
-                if not parts:
+                location = archive_member_location(node, info.filename)
+                if location is None:
+                    rows.append(
+                        unusable_archive_member_path_row(
+                            node,
+                            info.filename,
+                            info.file_size,
+                        )
+                    )
                     continue
-                levels = node.levels + parts
-                logical_path = node.logical_path + "::" + "\\".join(parts)
+                levels, logical_path = location
                 try:
                     with archive.open(info) as member:
                         rows.extend(
@@ -1283,6 +1328,15 @@ def expand_7z(
         with py7zr.SevenZipFile(extended_path(node.source_path), mode="r") as archive:
             infos = [info for info in archive.list() if not info.is_directory]
             if not infos:
+                if archive.needs_password():
+                    return [
+                        archive_row(
+                            node,
+                            "7z archive",
+                            "Encrypted 7z headers could not be inspected without a password",
+                            integrity_status=INTEGRITY_NOT_VERIFIED,
+                        )
+                    ]
                 return [
                     archive_row(
                         node,
@@ -1308,6 +1362,17 @@ def expand_7z(
                 extraction_exception = exc
             finally:
                 factory.close_all()
+    except py7zr.exceptions.PasswordRequired:
+        if factory is not None:
+            factory.close_all()
+        return [
+            archive_row(
+                node,
+                "7z archive",
+                "Encrypted 7z headers could not be inspected without a password",
+                integrity_status=INTEGRITY_NOT_VERIFIED,
+            )
+        ]
     except Exception as exc:
         if factory is not None:
             factory.close_all()
@@ -1317,11 +1382,17 @@ def expand_7z(
 
     rows: list[ResultRow] = []
     for info in infos:
-        parts = split_archive_path(info.filename)
-        if not parts:
+        location = archive_member_location(node, info.filename)
+        if location is None:
+            rows.append(
+                unusable_archive_member_path_row(
+                    node,
+                    info.filename,
+                    info.uncompressed or 0,
+                )
+            )
             continue
-        levels = node.levels + parts
-        logical_path = node.logical_path + "::" + "\\".join(parts)
+        levels, logical_path = location
         size = info.uncompressed or 0
         product = factory.products.get(info.filename)
         if extraction_exception is not None:
@@ -1458,6 +1529,15 @@ def expand_rar(
         with rarfile.RarFile(extended_path(node.source_path)) as archive:
             infos = [info for info in archive.infolist() if not info.is_dir()]
             if not infos:
+                if archive.needs_password():
+                    return [
+                        archive_row(
+                            node,
+                            "RAR archive",
+                            "Encrypted RAR headers could not be inspected without a password",
+                            integrity_status=INTEGRITY_NOT_VERIFIED,
+                        )
+                    ]
                 return [
                     archive_row(
                         node,
@@ -1470,11 +1550,17 @@ def expand_rar(
                 return limit_rows
 
             for info in infos:
-                parts = split_archive_path(info.filename)
-                if not parts:
+                location = archive_member_location(node, info.filename)
+                if location is None:
+                    rows.append(
+                        unusable_archive_member_path_row(
+                            node,
+                            info.filename,
+                            info.file_size,
+                        )
+                    )
                     continue
-                levels = node.levels + parts
-                logical_path = node.logical_path + "::" + "\\".join(parts)
+                levels, logical_path = location
                 try:
                     with archive.open(info) as member:
                         rows.extend(

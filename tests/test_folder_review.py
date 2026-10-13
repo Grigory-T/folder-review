@@ -240,6 +240,125 @@ class FolderReviewTests(unittest.TestCase):
             )
         )
 
+    def test_encrypted_7z_headers_are_partial(self) -> None:
+        archive_path = self.root / "encrypted-headers.7z"
+        with py7zr.SevenZipFile(
+            archive_path,
+            "w",
+            password="review-only",
+            header_encryption=True,
+        ) as archive:
+            archive.writestr(b"secret", "secret.txt")
+
+        rows = self.inspect(archive_path)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].leaf_name, "encrypted-headers.7z")
+        self.assertEqual(rows[0].content_type, "7z archive")
+        self.assertEqual(
+            rows[0].integrity_status,
+            folder_review.INTEGRITY_NOT_VERIFIED,
+        )
+        self.assertEqual(
+            rows[0].error,
+            "Encrypted 7z headers could not be inspected without a password",
+        )
+
+    def test_encrypted_rar_headers_produce_partial_workbook(self) -> None:
+        fixture = (
+            Path(__file__).parent
+            / "fixtures"
+            / "windows"
+            / "rar5-encrypted-headers.rar"
+        )
+        archive_path = self.root / "encrypted-headers.rar"
+        archive_path.write_bytes(fixture.read_bytes())
+        output = self.root / "encrypted-headers.xlsx"
+
+        rows = self.inspect(archive_path)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].leaf_name, "encrypted-headers.rar")
+        self.assertEqual(rows[0].content_type, "RAR archive")
+        self.assertEqual(
+            rows[0].integrity_status,
+            folder_review.INTEGRITY_NOT_VERIFIED,
+        )
+        self.assertEqual(
+            rows[0].error,
+            "Encrypted RAR headers could not be inspected without a password",
+        )
+
+        with (
+            mock.patch.object(
+                folder_review.sys,
+                "argv",
+                [
+                    "folder_review.py",
+                    "--root",
+                    str(self.root),
+                    "--output",
+                    str(output),
+                ],
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            exit_code = folder_review.run()
+
+        self.assertEqual(exit_code, 2)
+        workbook = load_workbook(output, read_only=True, data_only=True)
+        try:
+            status_values = list(
+                workbook["scan_status"].iter_rows(values_only=True)
+            )
+            self.assertIn(("Статус", "PARTIAL"), status_values)
+            self.assertIn(("Строки с ошибками", 1), status_values)
+        finally:
+            workbook.close()
+
+    def test_genuinely_empty_unencrypted_rar_remains_verified(self) -> None:
+        archive_path = self.root / "empty.rar"
+        archive_path.write_bytes(b"fixture content is mocked")
+        stat_result = archive_path.stat()
+        node = folder_review.ArchiveNode(
+            str(archive_path),
+            str(archive_path),
+            (archive_path.name,),
+            stat_result.st_size,
+            0,
+        )
+        archive = mock.MagicMock()
+        archive.__enter__.return_value = archive
+        archive.infolist.return_value = []
+        archive.needs_password.return_value = False
+
+        with (
+            mock.patch.object(folder_review.rarfile, "RarFile", return_value=archive),
+            tempfile.TemporaryDirectory() as temp_dir,
+        ):
+            rows = folder_review.expand_rar(
+                node,
+                temp_dir,
+                folder_review.WorkBudget(rows_claimed=1),
+            )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].content_type, "RAR archive (empty)")
+        self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_VERIFIED)
+        self.assertIsNone(rows[0].error)
+
+    def test_unusable_archive_member_path_is_not_silently_dropped(self) -> None:
+        archive_path = self.root / "unusable-member-path.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr(".", b"payload")
+
+        rows = self.inspect(archive_path)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].content_type, "Not inspected")
+        self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
+        self.assertIn("no usable components", rows[0].error)
+
     def test_archive_expansion_budget_stops_7z_work(self) -> None:
         archive_path = self.make_7z(
             self.root / "large.7z",

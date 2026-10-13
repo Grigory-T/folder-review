@@ -53,6 +53,11 @@ The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
   when a backend reports the failure only after delivering every member byte.
 - Empty, encrypted, damaged, unsupported, or safety-limited archive members are
   retained as rows with errors whenever their names are readable.
+- When encrypted RAR or 7z headers hide every member name, the archive itself
+  remains as an error row with unverified integrity. The workbook is `PARTIAL`
+  rather than falsely reporting a verified empty archive.
+- Archive entries without any usable path component are retained as error rows
+  rather than silently disappearing from an otherwise complete result.
 - Nested archives use temporary local storage and are removed after inspection.
 
 ## Completion status
