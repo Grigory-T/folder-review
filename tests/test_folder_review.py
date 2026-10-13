@@ -336,6 +336,7 @@ class FolderReviewTests(unittest.TestCase):
                 "Расширение",
                 "Полное имя файла",
                 "Тип элемента",
+                "Распознанная роль",
                 "Тип ссылки",
                 "Цель ссылки",
                 "Права доступа",
@@ -533,6 +534,92 @@ class FolderReviewTests(unittest.TestCase):
             "UNKNOWN_0x01000000",
         )
         self.assertIsNone(folder_review.windows_attribute_names(None))
+
+    def test_common_windows_file_roles(self) -> None:
+        cases = {
+            "Thumbs.db": "Windows thumbnail cache (Thumbs.db)",
+            "ehthumbs.db": "Windows Media Center thumbnail cache (ehthumbs.db)",
+            "thumbcache_256.db": "Windows thumbnail cache database",
+            "iconcache_32.db": "Windows icon cache database",
+            "desktop.ini": "Windows folder settings (desktop.ini)",
+            "autorun.inf": "Windows AutoRun configuration (autorun.inf)",
+            "~$Quarterly report.xlsx": "Microsoft Office owner/lock file",
+            "~Quarterly report.xlsx": "Probable Microsoft Office temporary file",
+            "document.lnk": "Windows shortcut",
+            "website.url": "Windows Internet shortcut",
+            "working.tmp": "Temporary file",
+            "recovery.asd": "Microsoft Word AutoRecover file",
+            "backup.wbk": "Microsoft Word backup file",
+            "backup.xlk": "Microsoft Excel backup file",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    folder_review.recognized_file_role(name),
+                    expected,
+                )
+
+        self.assertIsNone(folder_review.recognized_file_role("report.xlsx"))
+        self.assertEqual(
+            folder_review.recognized_file_role(
+                "renamed.bin",
+                "Windows shortcut (LNK)",
+            ),
+            "Windows shortcut",
+        )
+
+    def test_windows_objects_keep_content_and_role_separate(self) -> None:
+        ole_header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + bytes(512)
+        lnk_header = (
+            b"\x4c\x00\x00\x00\x01\x14\x02\x00\x00\x00"
+            b"\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46"
+            + bytes(32)
+        )
+        archive = self.make_zip(
+            self.root / "windows-objects.zip",
+            {
+                "Folder/Thumbs.db": ole_header,
+                "Folder/~$Budget.xlsx": b"\x00owner",
+                "Folder/~Budget.xlsx": b"\x00temporary",
+                "Folder/desktop.ini": b"[.ShellClassInfo]\r\nIconFile=folder.ico\r\n",
+                "Folder/shortcut.lnk": lnk_header,
+            },
+        )
+
+        rows = self.inspect(archive)
+        by_name = {row.leaf_name: row for row in rows}
+
+        self.assertEqual(
+            by_name["Thumbs.db"].content_type,
+            "Windows thumbnail cache (Thumbs.db / OLE2)",
+        )
+        self.assertEqual(
+            by_name["Thumbs.db"].recognized_role,
+            "Windows thumbnail cache (Thumbs.db)",
+        )
+        self.assertEqual(by_name["~$Budget.xlsx"].content_type, "Unknown binary")
+        self.assertEqual(
+            by_name["~$Budget.xlsx"].recognized_role,
+            "Microsoft Office owner/lock file",
+        )
+        self.assertEqual(by_name["~Budget.xlsx"].content_type, "Unknown binary")
+        self.assertEqual(
+            by_name["~Budget.xlsx"].recognized_role,
+            "Probable Microsoft Office temporary file",
+        )
+        self.assertEqual(
+            by_name["desktop.ini"].recognized_role,
+            "Windows folder settings (desktop.ini)",
+        )
+        self.assertEqual(
+            by_name["shortcut.lnk"].content_type,
+            "Windows shortcut (LNK)",
+        )
+        self.assertEqual(
+            by_name["shortcut.lnk"].recognized_role,
+            "Windows shortcut",
+        )
+        self.assertTrue(all(row.in_archive == "да" for row in rows))
 
     def test_all_supported_bom_variants(self) -> None:
         cases = {

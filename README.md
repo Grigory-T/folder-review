@@ -32,6 +32,12 @@ The result is `folder-review.xlsx` beside the script. `RUN.bat` creates a local
 ## Behavior
 
 - Files are classified from their content, not only their extension.
+- Common Windows and Microsoft Office artifacts remain visible and receive a
+  separate `Распознанная роль` value. This includes `Thumbs.db`, `ehthumbs.db`,
+  `thumbcache_*.db`, `iconcache_*.db`, `desktop.ini`, `autorun.inf`, Windows
+  `.lnk` and `.url` shortcuts, Office `~$...` owner/lock files, likely Office
+  `~...` temporary files, `.tmp` files, and common Word/Excel recovery or backup
+  files (`.asd`, `.wbk`, `.xlk`).
 - ZIP, 7z, and RAR archives can contain folders and more supported archives in
   any order.
 - DOCX, XLSX, XLSB, PPTX, EPUB, and JAR ZIP containers remain single logical
@@ -104,6 +110,13 @@ data streams. Archive members are logical files rather than OS filesystem
 objects, so their OS-only fields remain blank and their item type is
 `Файл внутри архива`. Their size, content type, hierarchy, BOM, integrity
 status, and errors are reported.
+
+`Распознанная роль` is intentionally separate from `Тип по содержимому`.
+Filename-based roles are useful for filtering familiar Windows clutter without
+pretending that an Office owner file is a real workbook. A `Thumbs.db` row gets
+the specific OLE2 thumbnail-cache content label only when its binary signature
+agrees; unusual or damaged content remains truthfully classified. These rows
+are inventoried normally and are never silently excluded.
 
 This is a logical file inventory. Ordinary folders define hierarchy and are not
 separate rows. A successfully expanded archive is represented by its final

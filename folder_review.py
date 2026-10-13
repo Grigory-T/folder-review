@@ -59,12 +59,53 @@ STREAM_ARCHIVE_TYPES = {
     "RAR archive": "RAR archive",
 }
 
+OFFICE_DOCUMENT_EXTENSIONS = frozenset(
+    {
+        "doc",
+        "docm",
+        "docx",
+        "dot",
+        "dotm",
+        "dotx",
+        "ods",
+        "odp",
+        "odt",
+        "pot",
+        "potm",
+        "potx",
+        "pps",
+        "ppsm",
+        "ppsx",
+        "ppt",
+        "pptm",
+        "pptx",
+        "rtf",
+        "vsd",
+        "vsdm",
+        "vsdx",
+        "xls",
+        "xlsb",
+        "xlsm",
+        "xlsx",
+        "xlt",
+        "xltm",
+        "xltx",
+    }
+)
+
 
 MAGIC_SIGNATURES = (
     (b"\x37\x7a\xbc\xaf\x27\x1c", "7z archive"),
     (b"Rar!\x1a\x07\x01\x00", "RAR archive"),
     (b"Rar!\x1a\x07\x00", "RAR archive"),
     (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "OLE2 compound file"),
+    (
+        (
+            b"\x4c\x00\x00\x00\x01\x14\x02\x00\x00\x00"
+            b"\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46"
+        ),
+        "Windows shortcut (LNK)",
+    ),
     (b"SQLite format 3\x00", "SQLite DB"),
     (b"\x00\x01\x00\x00Standard Jet DB", "Microsoft Access / Jet DB"),
     (b"\x00\x01\x00\x08\x00\x01\x00\x01\x01", "Microsoft Access MDB"),
@@ -198,6 +239,7 @@ class ResultRow:
     extension: str
     size: int
     item_type: str
+    recognized_role: str | None
     link_type: str | None
     link_target: str | None
     content_type: str
@@ -345,6 +387,55 @@ def extension_of(name: str) -> str:
     return ntpath.splitext(name)[1].lstrip(".").lower()
 
 
+def recognized_file_role(name: str, content_type: str | None = None) -> str | None:
+    """Return a high-confidence role without replacing content classification."""
+    lowered = name.casefold()
+    extension = extension_of(name)
+
+    if lowered == "thumbs.db":
+        return "Windows thumbnail cache (Thumbs.db)"
+    if lowered == "ehthumbs.db":
+        return "Windows Media Center thumbnail cache (ehthumbs.db)"
+    if re.fullmatch(r"thumbcache(?:_[^.]+)?\.db", lowered):
+        return "Windows thumbnail cache database"
+    if re.fullmatch(r"iconcache(?:_[^.]+)?\.db", lowered):
+        return "Windows icon cache database"
+    if lowered == "desktop.ini":
+        return "Windows folder settings (desktop.ini)"
+    if lowered == "autorun.inf":
+        return "Windows AutoRun configuration (autorun.inf)"
+
+    if lowered.startswith("~$") and extension in OFFICE_DOCUMENT_EXTENSIONS:
+        return "Microsoft Office owner/lock file"
+    if lowered.startswith("~") and extension in OFFICE_DOCUMENT_EXTENSIONS:
+        return "Probable Microsoft Office temporary file"
+
+    if extension == "lnk" or content_type == "Windows shortcut (LNK)":
+        return "Windows shortcut"
+    if extension == "url":
+        return "Windows Internet shortcut"
+    if extension == "tmp":
+        return "Temporary file"
+    if extension == "asd":
+        return "Microsoft Word AutoRecover file"
+    if extension == "wbk":
+        return "Microsoft Word backup file"
+    if extension == "xlk":
+        return "Microsoft Excel backup file"
+    return None
+
+
+def refine_named_content_type(name: str, content_type: str) -> str:
+    """Add a specific label only when filename and content evidence agree."""
+    lowered = name.casefold()
+    if content_type == "OLE2 compound file":
+        if lowered == "thumbs.db":
+            return "Windows thumbnail cache (Thumbs.db / OLE2)"
+        if lowered == "ehthumbs.db":
+            return "Windows Media Center thumbnail cache (ehthumbs.db / OLE2)"
+    return content_type
+
+
 def timestamp_value(value: float | None) -> datetime | None:
     if value is None:
         return None
@@ -482,6 +573,7 @@ def make_row(
     link_target: str | None = None,
 ) -> ResultRow:
     leaf_name = levels[-1]
+    content_type = refine_named_content_type(leaf_name, content_type)
     return ResultRow(
         levels=levels,
         full_path=full_path,
@@ -489,6 +581,7 @@ def make_row(
         extension=extension_of(leaf_name),
         size=size,
         item_type=item_type or ("Файл" if properties else "Файл внутри архива"),
+        recognized_role=recognized_file_role(leaf_name, content_type),
         link_type=link_type,
         link_target=link_target,
         content_type=content_type,
@@ -1674,6 +1767,7 @@ def write_workbook(
         "Расширение",
         "Полное имя файла",
         "Тип элемента",
+        "Распознанная роль",
         "Тип ссылки",
         "Цель ссылки",
         "Права доступа",
@@ -1768,6 +1862,7 @@ def write_workbook(
         "Имя файла": 20,
         "Полное имя файла": 24,
         "Тип элемента": 24,
+        "Распознанная роль": 38,
         "Тип ссылки": 20,
         "Цель ссылки": 32,
         "Права доступа": 16,
@@ -1890,6 +1985,7 @@ def write_workbook(
             row.extension,
             row.leaf_name,
             row.item_type,
+            row.recognized_role,
             row.link_type,
             row.link_target,
             properties.permissions if properties else None,
