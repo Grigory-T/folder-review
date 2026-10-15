@@ -1,4 +1,5 @@
-Folder Review uses Python, olefile, openpyxl, py7zr, rarfile and their dependencies.
+Folder Review uses Python, XlsxWriter, olefile, py7zr, rarfile and their dependencies.
+openpyxl is used only by validation tests and is not bundled in the production EXE.
 Their license texts are included in third-party-licenses/ in the release folder.
 
 This distribution includes parts of 7-Zip 26.04 (7z.exe and 7z.dll).
