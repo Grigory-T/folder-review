@@ -1,4 +1,4 @@
-Folder Review 0.7.1 - Windows x86-64
+Folder Review 0.8.0 - Windows x86-64
 
 Copy this folder to a writable local folder on the Windows computer.
 Run folder-review.exe and enter the folder to inspect when prompted.

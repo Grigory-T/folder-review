@@ -44,7 +44,8 @@ Invoke-Native $uvPath @('venv', '--clear', '.build-venv', '--python', '3.13.14')
 $py = Join-Path $root '.build-venv\Scripts\python.exe'
 Invoke-Native $py @('-c', 'import sys; assert sys.version_info[:3] == (3,13,14) and sys.maxsize > 2**32')
 Invoke-Native $uvPath @('export', '--frozen', '--no-dev', '--no-emit-project', '--output-file', '.build\runtime-requirements.txt')
-Invoke-Native $uvPath @('pip', 'install', '--python', $py, '--require-hashes', '-r', '.build\runtime-requirements.txt', '-r', 'windows_build\requirements-build.txt')
+Invoke-Native $uvPath @('export', '--frozen', '--only-group', 'test', '--no-emit-project', '--output-file', '.build\test-requirements.txt')
+Invoke-Native $uvPath @('pip', 'install', '--python', $py, '--require-hashes', '-r', '.build\runtime-requirements.txt', '-r', '.build\test-requirements.txt', '-r', 'windows_build\requirements-build.txt')
 
 $env:FOLDER_REVIEW_7ZIP_DIR = (Resolve-Path -LiteralPath $SevenZipDir).Path
 $env:PATH = $env:FOLDER_REVIEW_7ZIP_DIR + ';' + $env:PATH

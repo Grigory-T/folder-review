@@ -30,12 +30,10 @@ sys.dont_write_bytecode = True
 import olefile
 import py7zr
 import rarfile
-from openpyxl import Workbook
-from openpyxl.cell import WriteOnlyCell
-from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.styles import Alignment, Border, Color, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+import xlsxwriter
 from py7zr import Py7zIO, WriterFactory
+from xlsxwriter.color import Color
+from xlsxwriter.utility import xl_col_to_name
 
 # User configuration ---------------------------------------------------------
 
@@ -2167,10 +2165,53 @@ def apply_physical_row_limit(
 def excel_text(value: str | None) -> str | None:
     if value is None:
         return None
-    text = ILLEGAL_CHARACTERS_RE.sub("�", str(value))
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "�", str(value))
     if len(text) > EXCEL_MAX_TEXT_LENGTH:
         text = text[: EXCEL_MAX_TEXT_LENGTH - 1] + "…"
     return text
+
+
+def get_column_letter(index: int) -> str:
+    return xl_col_to_name(index - 1)
+
+
+class _ReportSheet:
+    """Write report rows sequentially without retaining worksheet cell objects."""
+
+    def __init__(self, workbook, name: str, formats: dict):
+        self.workbook = workbook
+        self.worksheet = workbook.add_worksheet(name)
+        self.formats = formats
+        self.row = 0
+
+    def append(self, cells) -> None:
+        for column, cell in enumerate(cells):
+            if cell is None:
+                continue
+            value, cell_format = cell
+            if value is None:
+                result = self.worksheet.write_blank(self.row, column, None, cell_format)
+            elif isinstance(value, str):
+                result = self.worksheet.write_string(
+                    self.row, column, value, cell_format
+                )
+            elif isinstance(value, datetime):
+                result = self.worksheet.write_datetime(
+                    self.row, column, value, cell_format
+                )
+            elif isinstance(value, bool):
+                result = self.worksheet.write_boolean(
+                    self.row, column, value, cell_format
+                )
+            else:
+                result = self.worksheet.write_number(
+                    self.row, column, value, cell_format
+                )
+            if result:
+                raise ValueError(
+                    f"Excel cell could not be written: row {self.row + 1}, column {column + 1}, code {result}"
+                )
+        self.row += 1
 
 
 def styled_cell(
@@ -2184,19 +2225,60 @@ def styled_cell(
     number_format=None,
     force_text=False,
 ):
-    cell = WriteOnlyCell(ws, value=value)
-    if force_text and isinstance(value, str):
-        cell.data_type = "s"
-    cell.font = font
-    if border is not None:
-        cell.border = border
-    if fill is not None:
-        cell.fill = fill
-    if alignment is not None:
-        cell.alignment = alignment
-    if number_format is not None:
-        cell.number_format = number_format
-    return cell
+    # Every string uses write_string(), including formula/URL-like filenames.
+    # Cache format objects, not rows or cells. Font/border definitions live for
+    # the whole report; alignment is keyed by value to share diagnostic formats.
+    alignment = alignment or {}
+    key = (
+        id(font),
+        id(border),
+        fill,
+        alignment.get("align"),
+        alignment.get("valign"),
+        alignment.get("text_wrap"),
+        number_format,
+    )
+    cell_format = ws.formats.get(key)
+    if cell_format is None:
+        options = dict(font)
+        options.update(border or {})
+        options.update(alignment)
+        if fill:
+            options.update(pattern=1, fg_color=fill)
+        if number_format:
+            options["num_format"] = number_format
+        cell_format = ws.workbook.add_format(options)
+        ws.formats[key] = cell_format
+    return value, cell_format
+
+
+@contextmanager
+def _report_workbook(output_path: Path):
+    """Close/compress successfully before atomically replacing the report."""
+    output_name = absolute_path(output_path)
+    output_folder = os.path.dirname(output_name)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".folder-review-", suffix=".tmp.xlsx", dir=extended_path(output_folder)
+    )
+    os.close(descriptor)
+    try:
+        with xlsxwriter.Workbook(
+            extended_path(temporary),
+            {
+                "constant_memory": True,
+                "strings_to_formulas": False,
+                "strings_to_urls": False,
+                "strings_to_numbers": False,
+                "tmpdir": extended_path(tempfile.gettempdir()),
+            },
+        ) as workbook:
+            yield workbook
+        os.replace(temporary, extended_path(output_name))
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def write_workbook(
@@ -2269,490 +2351,467 @@ def write_workbook(
     data_headers = [all_data_headers[index] for index in visible_columns]
     headers = ["№пп", *data_headers, "last"]
 
-    wb = Workbook(write_only=True)
-    wb.calculation.fullCalcOnLoad = True
-    wb.calculation.forceFullCalc = True
-    wb.calculation.calcMode = "auto"
-    wb.calculation.calcId = 191029
-    wb.views[0].windowWidth = 22260
-    wb.views[0].windowHeight = 12650
-    wb.views[0].tabRatio = 928
+    with _report_workbook(output_path) as wb:
+        wb.set_calc_mode("auto", 191029)
+        wb.set_size(1484, 843)
+        wb.set_tab_ratio(92.8)
+        formats = {}
+        ws = _ReportSheet(wb, "folder_review", formats)
+        sheet = ws.worksheet
+        sheet.hide_gridlines(2)
+        sheet.set_zoom(85)
+        sheet.set_tab_color("#002060")
+        sheet.outline_settings(True, False, False, False)
+        sheet.set_default_row(14.5)
+        sheet.set_portrait()
+        sheet.set_paper(9)
+        sheet.set_margins(0.7, 0.75, 0.75, 0.75)
+        sheet.set_header("", {"margin": 0.3})
+        sheet.set_footer("", {"margin": 0.3})
 
-    ws = wb.create_sheet("folder_review")
-    ws.sheet_view.showGridLines = False
-    ws.sheet_view.zoomScale = 85
-    ws.sheet_view.zoomScaleNormal = 85
-    ws.sheet_properties.tabColor = "FF002060"
-    ws.sheet_properties.outlinePr.summaryBelow = False
-    ws.sheet_properties.outlinePr.summaryRight = False
-    ws.sheet_format.defaultRowHeight = 14.5
-    ws.freeze_panes = None
-    ws.page_setup.orientation = "portrait"
-    ws.page_setup.paperSize = "9"  # A4
-    ws.page_margins.left = 0.7
-    ws.page_margins.right = 0.7
-    ws.page_margins.top = 0.75
-    ws.page_margins.bottom = 0.75
-    ws.page_margins.header = 0.3
-    ws.page_margins.footer = 0.3
+        border = {"border": 1, "border_color": "#000000"}
+        normal_font = {
+            "font_name": "Calibri",
+            "font_size": 11,
+            "font_color": Color((1, 0)),
+        }
+        title_font = {**normal_font, "bold": True, "font_charset": 204}
+        header_font = dict(title_font)
+        boundary_font = {
+            "font_name": "Calibri",
+            "font_size": 11,
+            "bold": True,
+            "font_color": Color((0, 0)),
+            "font_charset": 204,
+        }
+        blue_fill = "#00B0F0"
+        black_fill = "#000000"
+        green_fill = "#C6E0B4"
+        amber_fill = "#FFE699"
+        centered = {"align": "center", "valign": "vcenter"}
+        wrapped_centered = {**centered, "text_wrap": True}
 
-    thin = Side(style="thin", color=Color(indexed=64))
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    normal_font = Font(name="Calibri", size=11, color=Color(theme=1))
-    title_font = Font(
-        name="Calibri", size=11, bold=True, color=Color(theme=1), charset=204
-    )
-    header_font = Font(
-        name="Calibri", size=11, bold=True, color=Color(theme=1), charset=204
-    )
-    boundary_font = Font(
-        name="Calibri", size=11, bold=True, color=Color(theme=0), charset=204
-    )
-    blue_fill = PatternFill("solid", fgColor="FF00B0F0")
-    black_fill = PatternFill("solid", fgColor=Color(theme=1))
-    green_fill = PatternFill("solid", fgColor="FFC6E0B4")
-    amber_fill = PatternFill("solid", fgColor="FFFFE699")
-    centered = Alignment(horizontal="center", vertical="center")
-    wrapped_centered = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-    first_table_column = 2
-    last_table_column = first_table_column + len(headers) - 1
-    ws.column_dimensions["A"].width = 5.81640625
-    wide_columns = {
-        "Полный путь к файлу": 42,
-        "Имя файла": 20,
-        "Полное имя файла": 24,
-        "Тип элемента": 24,
-        "Распознанная роль": 38,
-        "Тип ссылки": 20,
-        "Цель ссылки": 32,
-        "Права доступа": 16,
-        "Атрибуты файла (Windows)": 32,
-        "st_ino": 22,
-        "st_dev": 22,
-        "st_rdev": 16,
-        "st_uid (User ID of the owner)": 17,
-        "st_gid (Group ID of the owner)": 17,
-        "Время последнего обращения к файлу": 20,
-        "Время последнего изменения файла": 20,
-        "Время создания файла": 20,
-        "Время изменения метаданных": 20,
-        "Проверка целостности": 20,
-        "Тип по содержимому": 24,
-        "Ошибка": 20,
-    }
-    for offset, column in enumerate(range(first_table_column, last_table_column + 1)):
-        letter = get_column_letter(column)
-        boundary = column in (first_table_column, last_table_column)
-        header = headers[offset]
-        ws.column_dimensions[letter].width = (
-            5.81640625 if boundary else wide_columns.get(header, 12.54296875)
-        )
-    ws.row_dimensions[6].height = 72
-
-    ws.append([None])
-    root_name = os.path.basename(root_folder.rstrip("\\/")) or root_folder
-    title = f"Таблица: Обзор файлов папки {root_name}"
-    ws.append(
-        [None, styled_cell(ws, excel_text(title), font=title_font, force_text=True)]
-    )
-    ws.append([None])
-
-    number_row = [None]
-    for index, _ in enumerate(headers, start=1):
-        number_row.append(
-            styled_cell(
-                ws,
-                index,
-                font=normal_font,
-                border=border,
-                alignment=centered,
-            )
-        )
-    ws.append(number_row)
-    ws.append([None])
-
-    header_row = [None]
-    for index, header in enumerate(headers):
-        boundary = index in (0, len(headers) - 1)
-        header_row.append(
-            styled_cell(
-                ws,
-                header,
-                font=boundary_font if boundary else header_font,
-                border=border,
-                fill=black_fill if boundary else blue_fill,
-                alignment=wrapped_centered,
-            )
-        )
-    ws.append(header_row)
-
-    centered_headers = {
-        "Уровень листа",
-        "Расширение",
-        "Тип элемента",
-        "Тип ссылки",
-        "Права доступа",
-        "Скрытый",
-        "Только чтение",
-        "Исполняемый",
-        "Системный (Windows)",
-        "Архивный (Windows)",
-        "Временный (Windows)",
-        "Автономный (Windows)",
-        "Сжатый (Windows)",
-        "Зашифрованный (Windows)",
-        "Разреженный (Windows)",
-        "Не индексировать содержимое (Windows)",
-        "st_file_attributes",
-        "st_reparse_tag",
-        "st_mode",
-        "st_ino",
-        "st_dev",
-        "st_rdev",
-        "st_nlink",
-        "st_uid (User ID of the owner)",
-        "st_gid (Group ID of the owner)",
-        "st_blksize",
-        "st_blocks",
-        "BOM",
-        "Проверка целостности",
-        "В архиве",
-    }
-    number_formats = {
-        "st_ino": "@",
-        "st_dev": "@",
-        "st_rdev": "@",
-        "st_uid (User ID of the owner)": "@",
-        "st_gid (Group ID of the owner)": "@",
-        "Размер файла в мб": "#,##0.000",
-        "Размер файла, байт": "#,##0",
-        "Время последнего обращения к файлу": "yyyy-mm-dd hh:mm:ss",
-        "Время последнего изменения файла": "yyyy-mm-dd hh:mm:ss",
-        "Время создания файла": "yyyy-mm-dd hh:mm:ss",
-        "Время изменения метаданных": "yyyy-mm-dd hh:mm:ss",
-    }
-    for row_number, row in enumerate(rows, start=1):
-        properties = row.properties
-        stem_name = ntpath.splitext(row.leaf_name)[0]
-        values = [
-            *(
-                row.levels[index] if index < len(row.levels) else None
-                for index in range(max_level)
-            ),
-            len(row.levels),
-            row.full_path,
-            stem_name,
-            row.extension,
-            row.leaf_name,
-            row.item_type,
-            row.recognized_role,
-            row.link_type,
-            row.link_target,
-            properties.permissions if properties else None,
-            properties.hidden if properties else None,
-            properties.read_only if properties else None,
-            properties.executable if properties else None,
-            properties.system if properties else None,
-            properties.archive_attribute if properties else None,
-            properties.temporary if properties else None,
-            properties.offline if properties else None,
-            properties.compressed if properties else None,
-            properties.encrypted if properties else None,
-            properties.sparse if properties else None,
-            properties.not_content_indexed if properties else None,
-            properties.file_attributes if properties else None,
-            properties.file_attributes_value if properties else None,
-            properties.reparse_tag if properties else None,
-            properties.mode if properties else None,
-            properties.inode if properties else None,
-            properties.device if properties else None,
-            properties.device_type if properties else None,
-            properties.links if properties else None,
-            properties.user_id if properties else None,
-            properties.group_id if properties else None,
-            properties.block_size if properties else None,
-            properties.blocks if properties else None,
-            row.size / (1024 * 1024),
-            row.size,
-            properties.accessed_at if properties else None,
-            properties.modified_at if properties else None,
-            properties.created_at if properties else None,
-            properties.metadata_changed_at if properties else None,
-            row.bom,
-            row.integrity_status,
-            row.content_type,
-            row.in_archive,
-            row.error,
-        ]
-
-        output_row = [None]
-        output_row.append(
-            styled_cell(
-                ws,
-                row_number,
-                font=normal_font,
-                border=border,
-                alignment=centered,
-            )
-        )
-
-        for header, value in zip(
-            data_headers, (values[index] for index in visible_columns)
+        first_table_column = 2
+        last_table_column = first_table_column + len(headers) - 1
+        sheet.set_column(0, 0, 5.81640625 - 5 / 7)
+        wide_columns = {
+            "Полный путь к файлу": 42,
+            "Имя файла": 20,
+            "Полное имя файла": 24,
+            "Тип элемента": 24,
+            "Распознанная роль": 38,
+            "Тип ссылки": 20,
+            "Цель ссылки": 32,
+            "Права доступа": 16,
+            "Атрибуты файла (Windows)": 32,
+            "st_ino": 22,
+            "st_dev": 22,
+            "st_rdev": 16,
+            "st_uid (User ID of the owner)": 17,
+            "st_gid (Group ID of the owner)": 17,
+            "Время последнего обращения к файлу": 20,
+            "Время последнего изменения файла": 20,
+            "Время создания файла": 20,
+            "Время изменения метаданных": 20,
+            "Проверка целостности": 20,
+            "Тип по содержимому": 24,
+            "Ошибка": 20,
+        }
+        for offset, column in enumerate(
+            range(first_table_column, last_table_column + 1)
         ):
-            is_text = isinstance(value, str)
-            if is_text:
-                value = excel_text(value)
+            boundary = column in (first_table_column, last_table_column)
+            header = headers[offset]
+            width = 5.81640625 if boundary else wide_columns.get(header, 12.54296875)
+            sheet.set_column(column - 1, column - 1, width - 5 / 7)
+        sheet.set_row(5, 72)
+
+        ws.append([None])
+        root_name = os.path.basename(root_folder.rstrip("\\/")) or root_folder
+        title = f"Таблица: Обзор файлов папки {root_name}"
+        ws.append(
+            [None, styled_cell(ws, excel_text(title), font=title_font, force_text=True)]
+        )
+        ws.append([None])
+
+        number_row = [None]
+        for index, _ in enumerate(headers, start=1):
+            number_row.append(
+                styled_cell(
+                    ws,
+                    index,
+                    font=normal_font,
+                    border=border,
+                    alignment=centered,
+                )
+            )
+        ws.append(number_row)
+        ws.append([None])
+
+        header_row = [None]
+        for index, header in enumerate(headers):
+            boundary = index in (0, len(headers) - 1)
+            header_row.append(
+                styled_cell(
+                    ws,
+                    header,
+                    font=boundary_font if boundary else header_font,
+                    border=border,
+                    fill=black_fill if boundary else blue_fill,
+                    alignment=wrapped_centered,
+                )
+            )
+        ws.append(header_row)
+
+        centered_headers = {
+            "Уровень листа",
+            "Расширение",
+            "Тип элемента",
+            "Тип ссылки",
+            "Права доступа",
+            "Скрытый",
+            "Только чтение",
+            "Исполняемый",
+            "Системный (Windows)",
+            "Архивный (Windows)",
+            "Временный (Windows)",
+            "Автономный (Windows)",
+            "Сжатый (Windows)",
+            "Зашифрованный (Windows)",
+            "Разреженный (Windows)",
+            "Не индексировать содержимое (Windows)",
+            "st_file_attributes",
+            "st_reparse_tag",
+            "st_mode",
+            "st_ino",
+            "st_dev",
+            "st_rdev",
+            "st_nlink",
+            "st_uid (User ID of the owner)",
+            "st_gid (Group ID of the owner)",
+            "st_blksize",
+            "st_blocks",
+            "BOM",
+            "Проверка целостности",
+            "В архиве",
+        }
+        number_formats = {
+            "st_ino": "@",
+            "st_dev": "@",
+            "st_rdev": "@",
+            "st_uid (User ID of the owner)": "@",
+            "st_gid (Group ID of the owner)": "@",
+            "Размер файла в мб": "#,##0.000",
+            "Размер файла, байт": "#,##0",
+            "Время последнего обращения к файлу": "yyyy-mm-dd hh:mm:ss",
+            "Время последнего изменения файла": "yyyy-mm-dd hh:mm:ss",
+            "Время создания файла": "yyyy-mm-dd hh:mm:ss",
+            "Время изменения метаданных": "yyyy-mm-dd hh:mm:ss",
+        }
+        for row_number, row in enumerate(rows, start=1):
+            properties = row.properties
+            stem_name = ntpath.splitext(row.leaf_name)[0]
+            values = [
+                *(
+                    row.levels[index] if index < len(row.levels) else None
+                    for index in range(max_level)
+                ),
+                len(row.levels),
+                row.full_path,
+                stem_name,
+                row.extension,
+                row.leaf_name,
+                row.item_type,
+                row.recognized_role,
+                row.link_type,
+                row.link_target,
+                properties.permissions if properties else None,
+                properties.hidden if properties else None,
+                properties.read_only if properties else None,
+                properties.executable if properties else None,
+                properties.system if properties else None,
+                properties.archive_attribute if properties else None,
+                properties.temporary if properties else None,
+                properties.offline if properties else None,
+                properties.compressed if properties else None,
+                properties.encrypted if properties else None,
+                properties.sparse if properties else None,
+                properties.not_content_indexed if properties else None,
+                properties.file_attributes if properties else None,
+                properties.file_attributes_value if properties else None,
+                properties.reparse_tag if properties else None,
+                properties.mode if properties else None,
+                properties.inode if properties else None,
+                properties.device if properties else None,
+                properties.device_type if properties else None,
+                properties.links if properties else None,
+                properties.user_id if properties else None,
+                properties.group_id if properties else None,
+                properties.block_size if properties else None,
+                properties.blocks if properties else None,
+                row.size / (1024 * 1024),
+                row.size,
+                properties.accessed_at if properties else None,
+                properties.modified_at if properties else None,
+                properties.created_at if properties else None,
+                properties.metadata_changed_at if properties else None,
+                row.bom,
+                row.integrity_status,
+                row.content_type,
+                row.in_archive,
+                row.error,
+            ]
+
+            output_row = [None]
             output_row.append(
                 styled_cell(
                     ws,
-                    value,
+                    row_number,
                     font=normal_font,
                     border=border,
-                    alignment=centered if header in centered_headers else None,
-                    number_format=number_formats.get(header),
-                    force_text=is_text,
+                    alignment=centered,
                 )
             )
 
-        output_row.append(
-            styled_cell(ws, 1, font=normal_font, border=border, alignment=centered)
-        )
-        ws.append(output_row)
+            for header, value in zip(
+                data_headers, (values[index] for index in visible_columns)
+            ):
+                is_text = isinstance(value, str)
+                if is_text:
+                    value = excel_text(value)
+                output_row.append(
+                    styled_cell(
+                        ws,
+                        value,
+                        font=normal_font,
+                        border=border,
+                        alignment=centered if header in centered_headers else None,
+                        number_format=number_formats.get(header),
+                        force_text=is_text,
+                    )
+                )
 
-    last_row = max(6, 6 + len(rows))
-    ws.auto_filter.ref = f"B6:{get_column_letter(last_table_column)}{last_row}"
-    ws.sheet_view.selection[0].activeCell = "B6"
-    ws.sheet_view.selection[0].sqref = "B6"
+            output_row.append(
+                styled_cell(ws, 1, font=normal_font, border=border, alignment=centered)
+            )
+            ws.append(output_row)
 
-    if report is None:
-        now = local_now()
-        report = RunReport(
-            status="COMPLETE",
-            started_at=now,
-            completed_at=now,
-            workers=DEFAULT_WORKERS,
-            physical_items=len(rows),
-            logical_rows=len(rows),
-            row_errors=sum(row.error is not None for row in rows),
-            stats=ScanStats(),
-            expanded_bytes=0,
-            max_expanded_bytes=DEFAULT_MAX_EXPANDED_BYTES,
-            max_archive_seconds=None,
-            max_rows=EXCEL_MAX_DATA_ROWS,
-        )
+        last_row = max(6, 6 + len(rows))
+        sheet.autofilter(f"B6:{get_column_letter(last_table_column)}{last_row}")
+        sheet.set_selection("B6")
 
-    status_ws = wb.create_sheet("scan_status")
-    status_ws.sheet_view.showGridLines = False
-    status_ws.sheet_properties.tabColor = (
-        "FF70AD47" if report.status == "COMPLETE" else "FFFFC000"
-    )
-    status_ws.freeze_panes = "A2"
-    status_ws.column_dimensions["A"].width = 34
-    status_ws.column_dimensions["B"].width = 72
-    status_ws.column_dimensions["C"].width = 72
+        if report is None:
+            now = local_now()
+            report = RunReport(
+                status="COMPLETE",
+                started_at=now,
+                completed_at=now,
+                workers=DEFAULT_WORKERS,
+                physical_items=len(rows),
+                logical_rows=len(rows),
+                row_errors=sum(row.error is not None for row in rows),
+                stats=ScanStats(),
+                expanded_bytes=0,
+                max_expanded_bytes=DEFAULT_MAX_EXPANDED_BYTES,
+                max_archive_seconds=None,
+                max_rows=EXCEL_MAX_DATA_ROWS,
+            )
 
-    status_header = [
-        styled_cell(
-            status_ws,
-            "Параметр",
-            font=header_font,
-            border=border,
-            fill=blue_fill,
-            alignment=wrapped_centered,
-        ),
-        styled_cell(
-            status_ws,
-            "Значение",
-            font=header_font,
-            border=border,
-            fill=blue_fill,
-            alignment=wrapped_centered,
-        ),
-    ]
-    status_ws.append(status_header)
+        status_ws = _ReportSheet(wb, "scan_status", formats)
+        status = status_ws.worksheet
+        status.hide_gridlines(2)
+        status.set_tab_color("#70AD47" if report.status == "COMPLETE" else "#FFC000")
+        status.freeze_panes(1, 0)
+        status.set_column(0, 0, 34 - 5 / 7)
+        status.set_column(1, 2, 72 - 5 / 7)
+        status.set_margins(0.75, 0.75, 1, 1)
+        status.set_header("", {"margin": 0.5})
+        status.set_footer("", {"margin": 0.5})
+        status.set_row(16, 32)
 
-    max_expanded = (
-        "без ограничения"
-        if report.max_expanded_bytes is None
-        else report.max_expanded_bytes
-    )
-    max_seconds = (
-        "без ограничения"
-        if report.max_archive_seconds is None
-        else report.max_archive_seconds
-    )
-    summary_rows = [
-        ("Статус", report.status),
-        ("Корневая папка", root_folder),
-        ("Начало", report.started_at),
-        ("Завершение", report.completed_at),
-        ("Потоки", report.workers),
-        ("Физические элементы", report.physical_items),
-        ("Логические строки", report.logical_rows),
-        ("Папки", report.stats.folders),
-        ("Пропущенные папки", report.stats.skipped_folders),
-        ("Пропущенные элементы", report.stats.skipped_entries),
-        ("Строки с ошибками", report.row_errors),
-        ("Распаковано, байт", report.expanded_bytes),
-        ("Лимит распаковки, байт", max_expanded),
-        ("Лимит времени архивов, сек.", max_seconds),
-        ("Лимит логических строк", report.max_rows),
-        (
-            "Семантика",
-            (
-                "Логический файловый инвентарь: обычные папки задают иерархию; "
-                "поддерживаемые архивы раскрываются до конечных файлов."
-            ),
-        ),
-    ]
-    for label, value in summary_rows:
-        if isinstance(value, datetime):
-            number_format = "yyyy-mm-dd hh:mm:ss"
-        elif isinstance(value, int):
-            number_format = "#,##0"
-        elif isinstance(value, float):
-            number_format = "#,##0.###"
-        else:
-            number_format = None
-        value_fill = None
-        value_font = normal_font
-        value_alignment = None
-        if label == "Статус":
-            value_fill = green_fill if value == "COMPLETE" else amber_fill
-            value_font = title_font
-            value_alignment = centered
-        elif label == "Семантика":
-            value_alignment = Alignment(vertical="top", wrap_text=True)
-        status_ws.append(
-            [
-                styled_cell(
-                    status_ws,
-                    label,
-                    font=title_font,
-                    border=border,
-                ),
-                styled_cell(
-                    status_ws,
-                    excel_text(value) if isinstance(value, str) else value,
-                    font=value_font,
-                    border=border,
-                    fill=value_fill,
-                    alignment=value_alignment,
-                    number_format=number_format,
-                    force_text=isinstance(value, str),
-                ),
-            ]
-        )
-    status_ws.row_dimensions[17].height = 32
-
-    status_ws.append([None])
-    diagnostic_headers = ("Этап", "Путь", "Ошибка")
-    status_ws.append(
-        [
+        status_header = [
             styled_cell(
                 status_ws,
-                header,
+                "Параметр",
                 font=header_font,
                 border=border,
                 fill=blue_fill,
                 alignment=wrapped_centered,
-            )
-            for header in diagnostic_headers
+            ),
+            styled_cell(
+                status_ws,
+                "Значение",
+                font=header_font,
+                border=border,
+                fill=blue_fill,
+                alignment=wrapped_centered,
+            ),
         ]
-    )
-    diagnostic_total = len(report.stats.diagnostics) + report.row_errors
-    diagnostic_iterator = chain(
-        report.stats.diagnostics,
-        (
-            Diagnostic(row.full_path, "archive or content inspection", row.error)
-            for row in rows
-            if row.error is not None
-        ),
-    )
-    max_diagnostic_rows = 1_048_576 - 19
-    displayed_diagnostics = (
-        max_diagnostic_rows - 1
-        if diagnostic_total > max_diagnostic_rows
-        else diagnostic_total
-    )
+        status_ws.append(status_header)
 
-    def append_diagnostic(worksheet_row: int, diagnostic: Diagnostic) -> None:
-        status_ws.append(
-            [
-                styled_cell(
-                    status_ws,
-                    excel_text(diagnostic.stage),
-                    font=normal_font,
-                    border=border,
-                    force_text=True,
-                ),
-                styled_cell(
-                    status_ws,
-                    excel_text(diagnostic.path),
-                    font=normal_font,
-                    border=border,
-                    alignment=Alignment(vertical="top", wrap_text=True),
-                    force_text=True,
-                ),
-                styled_cell(
-                    status_ws,
-                    excel_text(diagnostic.error),
-                    font=normal_font,
-                    border=border,
-                    alignment=Alignment(vertical="top", wrap_text=True),
-                    force_text=True,
-                ),
-            ]
+        max_expanded = (
+            "без ограничения"
+            if report.max_expanded_bytes is None
+            else report.max_expanded_bytes
         )
-        status_ws.row_dimensions[worksheet_row].height = 45
-
-    if diagnostic_total:
-        for worksheet_row, diagnostic in enumerate(
-            islice(diagnostic_iterator, displayed_diagnostics),
-            start=20,
-        ):
-            append_diagnostic(worksheet_row, diagnostic)
-        if diagnostic_total > displayed_diagnostics:
-            append_diagnostic(
-                20 + displayed_diagnostics,
-                Diagnostic(
-                    "",
-                    "diagnostics truncated",
-                    f"{diagnostic_total - displayed_diagnostics:,} additional diagnostics omitted",
+        max_seconds = (
+            "без ограничения"
+            if report.max_archive_seconds is None
+            else report.max_archive_seconds
+        )
+        summary_rows = [
+            ("Статус", report.status),
+            ("Корневая папка", root_folder),
+            ("Начало", report.started_at),
+            ("Завершение", report.completed_at),
+            ("Потоки", report.workers),
+            ("Физические элементы", report.physical_items),
+            ("Логические строки", report.logical_rows),
+            ("Папки", report.stats.folders),
+            ("Пропущенные папки", report.stats.skipped_folders),
+            ("Пропущенные элементы", report.stats.skipped_entries),
+            ("Строки с ошибками", report.row_errors),
+            ("Распаковано, байт", report.expanded_bytes),
+            ("Лимит распаковки, байт", max_expanded),
+            ("Лимит времени архивов, сек.", max_seconds),
+            ("Лимит логических строк", report.max_rows),
+            (
+                "Семантика",
+                (
+                    "Логический файловый инвентарь: обычные папки задают иерархию; "
+                    "поддерживаемые архивы раскрываются до конечных файлов."
                 ),
+            ),
+        ]
+        for label, value in summary_rows:
+            if isinstance(value, datetime):
+                number_format = "yyyy-mm-dd hh:mm:ss"
+            elif isinstance(value, int):
+                number_format = "#,##0"
+            elif isinstance(value, float):
+                number_format = "#,##0.###"
+            else:
+                number_format = None
+            value_fill = None
+            value_font = normal_font
+            value_alignment = None
+            if label == "Статус":
+                value_fill = green_fill if value == "COMPLETE" else amber_fill
+                value_font = title_font
+                value_alignment = centered
+            elif label == "Семантика":
+                value_alignment = {"valign": "top", "text_wrap": True}
+            status_ws.append(
+                [
+                    styled_cell(
+                        status_ws,
+                        label,
+                        font=title_font,
+                        border=border,
+                    ),
+                    styled_cell(
+                        status_ws,
+                        excel_text(value) if isinstance(value, str) else value,
+                        font=value_font,
+                        border=border,
+                        fill=value_fill,
+                        alignment=value_alignment,
+                        number_format=number_format,
+                        force_text=isinstance(value, str),
+                    ),
+                ]
             )
-    else:
+
+        status_ws.append([None])
+        diagnostic_headers = ("Этап", "Путь", "Ошибка")
         status_ws.append(
             [
                 styled_cell(
                     status_ws,
-                    "Нет ошибок",
-                    font=normal_font,
+                    header,
+                    font=header_font,
                     border=border,
-                    force_text=True,
-                ),
-                styled_cell(status_ws, None, font=normal_font, border=border),
-                styled_cell(status_ws, None, font=normal_font, border=border),
+                    fill=blue_fill,
+                    alignment=wrapped_centered,
+                )
+                for header in diagnostic_headers
             ]
         )
+        diagnostic_total = len(report.stats.diagnostics) + report.row_errors
+        diagnostic_iterator = chain(
+            report.stats.diagnostics,
+            (
+                Diagnostic(row.full_path, "archive or content inspection", row.error)
+                for row in rows
+                if row.error is not None
+            ),
+        )
+        max_diagnostic_rows = 1_048_576 - 19
+        displayed_diagnostics = (
+            max_diagnostic_rows - 1
+            if diagnostic_total > max_diagnostic_rows
+            else diagnostic_total
+        )
 
-    output_name = absolute_path(output_path)
-    output_folder = os.path.dirname(output_name)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=".folder-review-",
-        suffix=".tmp.xlsx",
-        dir=extended_path(output_folder),
-    )
-    os.close(descriptor)
-    try:
-        wb.save(temporary)
-        os.replace(temporary, extended_path(output_name))
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        def append_diagnostic(worksheet_row: int, diagnostic: Diagnostic) -> None:
+            status.set_row(worksheet_row - 1, 45)
+            status_ws.append(
+                [
+                    styled_cell(
+                        status_ws,
+                        excel_text(diagnostic.stage),
+                        font=normal_font,
+                        border=border,
+                        force_text=True,
+                    ),
+                    styled_cell(
+                        status_ws,
+                        excel_text(diagnostic.path),
+                        font=normal_font,
+                        border=border,
+                        alignment={"valign": "top", "text_wrap": True},
+                        force_text=True,
+                    ),
+                    styled_cell(
+                        status_ws,
+                        excel_text(diagnostic.error),
+                        font=normal_font,
+                        border=border,
+                        alignment={"valign": "top", "text_wrap": True},
+                        force_text=True,
+                    ),
+                ]
+            )
+
+        if diagnostic_total:
+            for worksheet_row, diagnostic in enumerate(
+                islice(diagnostic_iterator, displayed_diagnostics),
+                start=20,
+            ):
+                append_diagnostic(worksheet_row, diagnostic)
+            if diagnostic_total > displayed_diagnostics:
+                append_diagnostic(
+                    20 + displayed_diagnostics,
+                    Diagnostic(
+                        "",
+                        "diagnostics truncated",
+                        f"{diagnostic_total - displayed_diagnostics:,} additional diagnostics omitted",
+                    ),
+                )
+        else:
+            status_ws.append(
+                [
+                    styled_cell(
+                        status_ws,
+                        "Нет ошибок",
+                        font=normal_font,
+                        border=border,
+                        force_text=True,
+                    ),
+                    styled_cell(status_ws, None, font=normal_font, border=border),
+                    styled_cell(status_ws, None, font=normal_font, border=border),
+                ]
+            )
 
 
 # Command-line entry point ---------------------------------------------------

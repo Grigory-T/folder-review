@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -98,7 +100,9 @@ def main():
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
         ).strip()
     except (OSError, subprocess.CalledProcessError):
-        commit = None
+        commit = os.environ.get("FOLDER_REVIEW_SOURCE_COMMIT")
+        if commit is not None and re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise ValueError("Source commit must be a full lowercase Git SHA-1")
     inputs = [
         ROOT / "folder_review.py",
         ROOT / "BUILD-EXE.bat",
@@ -169,6 +173,8 @@ def main():
         "python": platform.python_version(),
         "build_platform": platform.platform(),
         "package_versions": {name: d.version for name, d in distributions.items()},
+        "report_writer": {"library": "XlsxWriter", "constant_memory": True},
+        "test_reader_only_packages": ["openpyxl", "et-xmlfile"],
         "sevenzip": json.loads((ROOT / "windows_build/7zip-pins.json").read_text()),
         "executable": {
             "name": args.exe.name,

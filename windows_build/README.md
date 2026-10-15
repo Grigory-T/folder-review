@@ -25,6 +25,11 @@ then runs [folder-review.spec](folder-review.spec) with PyInstaller **6.22.0**.
 Standard DEFLATE level 9 is used. Only builder-only `setuptools`, `pkg_resources`
 and `packaging` are excluded; no UPX, stripping or bytecode optimization.
 
+XlsxWriter is the sole report writer in both deliveries. The `test` dependency
+group adds openpyxl solely as an independent verification reader; it is not
+bundled in the production EXE. To run the source tests: `uv sync --group test`,
+then `uv run --group test python -m unittest discover -s tests`.
+
 ## Transparency checks
 
 The build publishes `dist/` only after:
@@ -46,6 +51,8 @@ payload hashes are recorded for comparison.
 
 `dist/` includes the EXE, matching Python files, test/rebuild receipts and licenses.
 Build paths and machine identifiers are not included in public receipts.
+When building from a source archive without `.git`, `FOLDER_REVIEW_SOURCE_COMMIT`
+may supply the release's full commit ID; input hashes remain independently recorded.
 
 ## Packaging behavior
 

@@ -9,7 +9,7 @@ use the same scanner. Supports local folders, SMB shares and mapped drives.
 [Download full package](../../releases/latest/download/folder-review-windows-x64.zip) ·
 [Releases and checksums](../../releases/latest)
 
-The x86-64 EXE is about **12.84 MB** and includes Python and 7-Zip. Copy it to a
+The x86-64 EXE includes Python and 7-Zip. Copy it to a
 local folder and run it, or use:
 
 ```powershell
@@ -40,6 +40,12 @@ uv sync --frozen --no-dev
   Raw archives renamed `.bin` also remain leaves.
 - Reports include hierarchy, sizes, dates, content types, hidden flags and errors.
   Add `--full-metadata` for advanced filesystem columns.
+- XlsxWriter writes both delivery formats in constant-memory mode. Filenames
+  remain text, including formula-like names and URLs. Colors, filters, dates,
+  hierarchy and diagnostics retain the existing layout; minor width/row-height
+  differences from older reports are expected. Literal `_xNNNN_` names and
+  carriage returns are preserved correctly in Excel. Some third-party readers
+  may expose OOXML escape sequences in these unusual strings.
 - `scan_status` records COMPLETE (exit `0`) or PARTIAL (exit `2`). Fatal errors
   return `1`. Archive integrity failures and inspection limits remain visible.
 - No web requests, telemetry or runtime downloads. Input is read-only to the

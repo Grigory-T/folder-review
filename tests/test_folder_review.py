@@ -3,11 +3,15 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import struct
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 import zipfile
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -55,6 +59,104 @@ class FolderReviewTests(unittest.TestCase):
             properties=folder_review.file_properties(path.name, stat_result),
         )
         return folder_review.process_file(item)
+
+    def test_writer_text_types_unicode_and_dates(self) -> None:
+        source = self.root / "metadata.txt"
+        source.write_text("sample", encoding="utf-8")
+        properties = replace(
+            folder_review.file_properties(source.name, source.stat()),
+            inode="18446744073709551615",
+            modified_at=datetime(2025, 1, 2, 3, 4, 5),
+        )
+        names = [
+            "=1+1.txt",
+            "+formula.txt",
+            "@name.txt",
+            "https://example.invalid",
+            "00123.txt",
+            "пример-😀.txt",
+            "literal_x000D_.txt",
+            "line\rbreak.txt",
+            "bad\x01control.txt",
+            "long-" + "x" * 32770,
+        ]
+        rows = [
+            folder_review.make_row(
+                "\\\\server\\share\\" + name,
+                (name,),
+                1234,
+                "Text",
+                False,
+                properties=properties,
+            )
+            for name in names
+        ]
+        output = self.root / "text.xlsx"
+        folder_review.write_workbook(rows, output, "sample", full_metadata=True)
+        book = load_workbook(output, read_only=True, data_only=False)
+        try:
+            ws = book["folder_review"]
+            headers = list(next(ws.iter_rows(min_row=6, max_row=6, values_only=True)))
+            name_column = headers.index("Полное имя файла") + 1
+            for row in ws.iter_rows(min_row=7):
+                self.assertEqual(row[name_column - 1].data_type, "s")
+                self.assertEqual(row[headers.index("st_ino")].value, properties.inode)
+                self.assertEqual(
+                    row[headers.index("Время последнего изменения файла")].value,
+                    properties.modified_at,
+                )
+                self.assertEqual(
+                    row[headers.index("Размер файла, байт")].data_type, "n"
+                )
+        finally:
+            book.close()
+        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with zipfile.ZipFile(output) as archive:
+            self.assertIsNone(archive.testzip())
+            tree = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        self.assertEqual(tree.findall(".//s:f", ns), [])
+        self.assertEqual(tree.findall(".//s:hyperlink", ns), [])
+        for number, name in enumerate(names, 7):
+            coordinate = f"{folder_review.get_column_letter(name_column)}{number}"
+            cell = tree.find(f".//s:c[@r='{coordinate}']/s:is", ns)
+            encoded = "".join(cell.itertext())
+            # Decode Excel's escape convention once; escaped literal sequences
+            # remain literal. openpyxl 3.1.5 does not decode inline strings.
+            decoded = re.sub(
+                r"_x([0-9a-fA-F]{4})_", lambda match: chr(int(match[1], 16)), encoded
+            )
+            self.assertEqual(decoded, folder_review.excel_text(name))
+
+    def test_writer_empty_report_and_streaming_row_heights(self) -> None:
+        output = self.root / "empty.xlsx"
+        folder_review.write_workbook([], output, "sample")
+        book = load_workbook(output, read_only=False)
+        try:
+            self.assertEqual(book["folder_review"].max_row, 6)
+            self.assertEqual(book["folder_review"].row_dimensions[6].height, 72)
+            self.assertEqual(book["scan_status"].row_dimensions[17].height, 32)
+            self.assertEqual(book["scan_status"].freeze_panes, "A2")
+            self.assertEqual(book["scan_status"]["B2"].value, "COMPLETE")
+        finally:
+            book.close()
+
+    def test_writer_failure_preserves_report_and_cleans_temporary_files(self) -> None:
+        output = self.root / "existing.xlsx"
+        output.write_bytes(b"previous report")
+        with tempfile.TemporaryDirectory(dir=self.root) as work:
+            with (
+                mock.patch.object(tempfile, "tempdir", work),
+                mock.patch.object(
+                    folder_review._ReportSheet,
+                    "append",
+                    side_effect=OSError("writer failed"),
+                ),
+                self.assertRaisesRegex(OSError, "writer failed"),
+            ):
+                folder_review.write_workbook([], output, "sample")
+            self.assertEqual(list(Path(work).iterdir()), [])
+        self.assertEqual(output.read_bytes(), b"previous report")
+        self.assertEqual(list(self.root.glob(".folder-review-*.tmp.xlsx")), [])
 
     def test_zip_7z_zip_and_office_package(self) -> None:
         office = self.make_zip(
@@ -471,8 +573,8 @@ class FolderReviewTests(unittest.TestCase):
         workbook = load_workbook(output, read_only=True, data_only=True)
         try:
             status_values = list(workbook["scan_status"].iter_rows(values_only=True))
-            self.assertIn(("Статус", "PARTIAL"), status_values)
-            self.assertIn(("Строки с ошибками", 1), status_values)
+            self.assertIn(("Статус", "PARTIAL"), [row[:2] for row in status_values])
+            self.assertIn(("Строки с ошибками", 1), [row[:2] for row in status_values])
         finally:
             workbook.close()
 
@@ -964,7 +1066,7 @@ class FolderReviewTests(unittest.TestCase):
         try:
             status_sheet = workbook["scan_status"]
             values = list(status_sheet.iter_rows(values_only=True))
-            self.assertIn(("Статус", "PARTIAL"), values)
+            self.assertIn(("Статус", "PARTIAL"), [row[:2] for row in values])
             self.assertTrue(
                 any(
                     len(row) >= 3
@@ -1015,9 +1117,11 @@ class FolderReviewTests(unittest.TestCase):
                 2,
             )
             status_values = list(workbook["scan_status"].iter_rows(values_only=True))
-            self.assertIn(("Статус", "PARTIAL"), status_values)
-            self.assertIn(("Физические элементы", 3), status_values)
-            self.assertIn(("Логические строки", 2), status_values)
+            self.assertIn(("Статус", "PARTIAL"), [row[:2] for row in status_values])
+            self.assertIn(
+                ("Физические элементы", 3), [row[:2] for row in status_values]
+            )
+            self.assertIn(("Логические строки", 2), [row[:2] for row in status_values])
             self.assertTrue(
                 any(
                     len(row) >= 3

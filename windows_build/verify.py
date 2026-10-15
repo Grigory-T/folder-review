@@ -96,8 +96,11 @@ def inspect_payload(exe):
         assert not any(
             name == module or name.startswith(module + ".") for name in pyz.toc
         )
-    for module in ("folder_review", "openpyxl", "olefile", "py7zr", "rarfile"):
+    for module in ("folder_review", "xlsxwriter", "olefile", "py7zr", "rarfile"):
         assert module in pyz.toc, module
+    assert not any(
+        name == "openpyxl" or name.startswith("openpyxl.") for name in pyz.toc
+    )
     return {
         "scanner_bytecode_identical": True,
         "embedded_code_paths_relative": True,
