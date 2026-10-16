@@ -480,7 +480,20 @@ def main():
             )
         expected_leaf_rows = len(leaf_names) * 3 + 77 * 2
 
+        hash_input = base / "hash-input"
+        (hash_input / "empty" / "deep").mkdir(parents=True)
+        hash_payload = b"same complete content" + bytes(range(256)) * 4096
+        hash_names = {"one.txt", "two.bin", "1.2.3-cp313-cp313-win_amd64"}
+        for name in hash_names:
+            (hash_input / name).write_bytes(hash_payload)
+        (hash_input / "empty-file").write_bytes(b"")
+        make_zip(
+            hash_input / "duplicates.zip",
+            {"inside.txt": hash_payload, "empty/deep/": b""},
+        )
+
         cases = [
+            ("hashes-and-folders", hash_input, ["--full-metadata"], 0, output),
             ("complete", complete, [], 0, output),
             ("package-policy", leaf_input, [], 0, output),
             ("package-policy-full", leaf_input, ["--full-metadata"], 0, output),
@@ -520,6 +533,7 @@ def main():
                 complete,
                 codecs,
                 leaf_input,
+                hash_input,
                 *[case[1] for case in rar_cases],
             ]
             before = {str(folder): snapshot(folder) for folder in input_folders}
@@ -558,6 +572,45 @@ def main():
                         run.stderr,
                     )
                     current, status, count = normalized_workbook(target)
+                    if name == "hashes-and-folders":
+                        workbook = load_workbook(target, read_only=True, data_only=True)
+                        try:
+                            sheet = workbook["folder_review"]
+                            headings = next(
+                                sheet.iter_rows(min_row=6, max_row=6, values_only=True)
+                            )
+                            values = list(sheet.iter_rows(min_row=7, values_only=True))
+                            records = [dict(zip(headings, row)) for row in values]
+                            markers = [row for row in records if row["last"] == 0]
+                            assert len(markers) == 2
+                            assert all(
+                                row["Полное имя файла"] == "dummy.dummy"
+                                and row["SHA-256"] is None
+                                and not row["Расширение"]
+                                for row in markers
+                            )
+                            assert sum(row["last"] for row in records) == 5
+                            for row in records:
+                                leaf = row["Полное имя файла"]
+                                if leaf in hash_names | {"inside.txt"}:
+                                    assert (
+                                        row["SHA-256"]
+                                        == hashlib.sha256(hash_payload).hexdigest()
+                                    )
+                                elif leaf == "empty-file":
+                                    assert (
+                                        row["SHA-256"]
+                                        == hashlib.sha256(b"").hexdigest()
+                                    )
+                                if leaf == "1.2.3-cp313-cp313-win_amd64":
+                                    assert not row["Расширение"]
+                                    assert row["Имя файла"] == leaf
+                                    assert (
+                                        row["Исходный суффикс"]
+                                        == "3-cp313-cp313-win_amd64"
+                                    )
+                        finally:
+                            workbook.close()
                     if name.startswith("package-policy"):
                         assert count == expected_leaf_rows, (
                             name,

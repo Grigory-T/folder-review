@@ -40,6 +40,22 @@ uv sync --frozen --no-dev
   Raw archives renamed `.bin` also remain leaves.
 - Reports include hierarchy, sizes, dates, content types, hidden flags and errors.
   Add `--full-metadata` for advanced filesystem columns.
+- `SHA-256` identifies equal complete file contents, including files inside
+  archives. For duplicate pivots, exclude blank hashes, group by `SHA-256`, and
+  sum `last`. Hashing reads whole files and increases disk/SMB traffic. Links,
+  virtual rows and incompletely read content have no hash. Observable changes
+  during hashing produce an error; this is not a filesystem snapshot.
+- Terminal folders without inventoried leaves have a virtual `dummy.dummy`
+  row, also inside archives. No dummy file is created. Its item type identifies
+  a folder, its path points to that folder, its hash/extension are blank and
+  `last=0`; ordinary file rows keep `last=1`. Unreadable folders remain unknown
+  and produce PARTIAL, even when a virtual row retains their location.
+- `Расширение` filters recognizable package-cache version/ABI suffixes,
+  generated numeric timestamps and suffixes longer than 64 characters.
+  Unknown ordinary suffixes, long legitimate suffixes and `.1` manual pages
+  remain. `--full-metadata` includes `Исходный суффикс`; filenames are unchanged.
+  These display heuristics do not infer extensions from content or change
+  which archive formats may expand.
 - XlsxWriter writes both delivery formats in constant-memory mode. Filenames
   remain text, including formula-like names and URLs. Colors, filters, dates,
   hierarchy and diagnostics retain the existing layout; minor width/row-height

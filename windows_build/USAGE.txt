@@ -1,4 +1,4 @@
-Folder Review 0.8.0 - Windows x86-64
+Folder Review 0.9.0 - Windows x86-64
 
 Copy this folder to a writable local folder on the Windows computer.
 Run folder-review.exe and enter the folder to inspect when prompted.
@@ -18,9 +18,19 @@ Input is read-only to the application. Temporary work files stay outside it.
 OS access-time updates, cloud hydration and antivirus are outside app control.
 The EXE initially unpacks to OS temp; input containing that runtime is rejected.
 
-The default workbook omits 25 advanced filesystem metadata columns, retaining
-Hidden and all content/inspection columns. Add --full-metadata for all columns.
+The default workbook omits advanced filesystem metadata and the raw suffix,
+retaining Hidden and all content/inspection columns. Add --full-metadata for all columns.
 Actual inspected file paths/names remain in the workbook. Keep reports private.
+
+SHA-256 hashes complete file content, including readable archive members.
+For duplicate pivots: exclude blank SHA-256, group by hash, sum last.
+Hashing reads whole files and increases disk/SMB traffic. Unreadable or changing
+content, links and virtual folder rows have no hash; this is not a snapshot.
+Virtual dummy.dummy rows retain folders without inventoried leaves. No file is
+created. Their path points to the folder, item type identifies a virtual folder,
+hash and extension are blank, and last=0. Ordinary file rows use last=1.
+Recognizable version/cache suffixes are filtered in the Extension column;
+the original suffix remains available with --full-metadata.
 
 Review the scan_status worksheet:
   Exit 0: COMPLETE inventory.

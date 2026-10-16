@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import ntpath
 import os
 import re
@@ -18,7 +19,7 @@ import time
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from itertools import chain, islice
 from pathlib import Path
@@ -45,6 +46,7 @@ OUTPUT_FILE = "folder-review.xlsx"
 # inventory keeps fields useful for an ordinary content/folder review.
 ADVANCED_METADATA_HEADERS = frozenset(
     {
+        "Исходный суффикс",
         "Тип ссылки",
         "Цель ссылки",
         "Права доступа",
@@ -305,6 +307,8 @@ class PhysicalFile:
     link_type: str | None = None
     link_target: str | None = None
     inspect_content: bool = True
+    virtual_folder: bool = False
+    folder_unreadable: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -315,6 +319,7 @@ class ArchiveNode:
     size: int
     depth: int
     properties: FileProperties | None = None
+    sha256: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -334,6 +339,8 @@ class ResultRow:
     integrity_status: str | None = None
     properties: FileProperties | None = None
     error: str | None = None
+    sha256: str | None = None
+    virtual_folder: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -713,6 +720,23 @@ def split_archive_path(name: str) -> tuple[str, ...]:
 
 
 def extension_of(name: str) -> str:
+    """Conservative display suffix; preserve unknown and long real extensions."""
+    suffix = raw_extension_of(name)
+    if len(suffix) > 64 or re.fullmatch(r"\d{1,3}_\d{15,20}", suffix):
+        return ""
+    # Package-cache version/ABI names are extensionless, unlike wheel files.
+    if re.fullmatch(
+        r"(?:\d+-)?(?:cp\d+|py\d+|abi\d+|windows|linux|macosx|manylinux|musllinux)"
+        r"[-_][a-z0-9_.-]+",
+        suffix,
+    ):
+        return ""
+    if re.fullmatch(r"\d+(?:\.\d+)+(?:[-+][a-z0-9_-]+)?", name.casefold()):
+        return ""
+    return suffix
+
+
+def raw_extension_of(name: str) -> str:
     return ntpath.splitext(name)[1].lstrip(".").lower()
 
 
@@ -900,6 +924,8 @@ def make_row(
     item_type: str | None = None,
     link_type: str | None = None,
     link_target: str | None = None,
+    sha256: str | None = None,
+    virtual_folder: bool = False,
 ) -> ResultRow:
     leaf_name = levels[-1]
     content_type = refine_named_content_type(leaf_name, content_type)
@@ -907,7 +933,7 @@ def make_row(
         levels=levels,
         full_path=full_path,
         leaf_name=leaf_name,
-        extension=extension_of(leaf_name),
+        extension="" if virtual_folder else extension_of(leaf_name),
         size=size,
         item_type=item_type or ("Файл" if properties else "Файл внутри архива"),
         recognized_role=recognized_file_role(leaf_name, content_type),
@@ -919,7 +945,46 @@ def make_row(
         integrity_status=integrity_status,
         properties=properties,
         error=error,
+        sha256=sha256,
+        virtual_folder=virtual_folder,
     )
+
+
+def folder_placeholder(
+    path: str, levels: tuple[str, ...], *, in_archive: bool, unreadable: bool = False
+) -> ResultRow:
+    """A logical marker only: never create a file or hash imaginary content."""
+    return make_row(
+        path,
+        levels + ("dummy.dummy",),
+        0,
+        "Folder contents not inspected"
+        if unreadable
+        else "Folder with no inventoried leaf files",
+        in_archive,
+        item_type="Папка (виртуальная строка)",
+        virtual_folder=True,
+    )
+
+
+def file_digest(path: str, expected_size: int | None = None) -> str:
+    """Hash complete bytes, rejecting observable changes during the read."""
+    digest = hashlib.sha256()
+    total = 0
+    with open(extended_path(path), "rb") as stream:
+        before = os.fstat(stream.fileno())
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+            total += len(chunk)
+        after = os.fstat(stream.fileno())
+    fields = ("st_size", "st_mtime_ns", "st_ctime_ns", "st_ino", "st_dev")
+    if (
+        any(getattr(before, key) != getattr(after, key) for key in fields)
+        or total != before.st_size
+        or (expected_size is not None and total != expected_size)
+    ):
+        raise OSError("File changed during inspection; SHA-256 was not retained")
+    return digest.hexdigest()
 
 
 # Content detection ----------------------------------------------------------
@@ -1113,6 +1178,7 @@ def scan_folder(
     subfolders: list[tuple[str, tuple[str, ...]]] = []
     files: list[PhysicalFile] = []
     diagnostics: list[Diagnostic] = []
+    skipped_folder = False
 
     try:
         with os.scandir(extended_path(folder_path)) as entries:
@@ -1196,9 +1262,20 @@ def scan_folder(
         diagnostics.append(
             Diagnostic(folder_path, "folder enumeration", exception_text(exc))
         )
-        return subfolders, files, diagnostics, True
+        skipped_folder = True
 
-    return subfolders, files, diagnostics, False
+    if not subfolders and not files:
+        files.append(
+            PhysicalFile(
+                folder_path,
+                levels,
+                0,
+                inspect_content=False,
+                virtual_folder=True,
+                folder_unreadable=bool(diagnostics),
+            )
+        )
+    return subfolders, files, diagnostics, skipped_folder
 
 
 def scan_tree(
@@ -1253,6 +1330,12 @@ def archive_row(
     bom: str | None = None,
     integrity_status: str | None = None,
 ) -> ResultRow:
+    digest = None
+    if not error and integrity_status == INTEGRITY_VERIFIED:
+        try:
+            digest = node.sha256 or file_digest(node.source_path, node.size)
+        except OSError as exc:
+            error = exception_text(exc)
     return make_row(
         node.logical_path,
         node.levels,
@@ -1265,6 +1348,7 @@ def archive_row(
             integrity_status or (INTEGRITY_ERROR if error else INTEGRITY_NOT_VERIFIED)
         ),
         properties=node.properties,
+        sha256=digest,
     )
 
 
@@ -1290,13 +1374,13 @@ def raw_archive_type(data: bytes) -> str | None:
 
 
 def expandable_archive_type(data: bytes, name: str) -> str | None:
-    if extension_of(name) not in ARCHIVE_EXTENSIONS:
+    if raw_extension_of(name) not in ARCHIVE_EXTENSIONS:
         return None
     return raw_archive_type(data)
 
 
 def should_expand_archive(file_type: str, name: str) -> bool:
-    return file_type in ARCHIVE_TYPES and extension_of(name) in ARCHIVE_EXTENSIONS
+    return file_type in ARCHIVE_TYPES and raw_extension_of(name) in ARCHIVE_EXTENSIONS
 
 
 def member_content_type(data: bytes, name: str) -> str:
@@ -1355,9 +1439,15 @@ def inspect_member_stream(
     archive_type = expandable_archive_type(head, levels[-1])
     if archive_type is None:
         error = None
+        digest = hashlib.sha256(head)
+        total = len(head)
         integrity_status = INTEGRITY_VERIFIED
         try:
-            drain_counted(stream, budget)
+            while chunk := read_counted(stream, 1024 * 1024, budget):
+                digest.update(chunk)
+                total += len(chunk)
+            if total != size:
+                raise OSError("Archive member size differs from fully read content")
         except Exception as exc:
             error = exception_text(exc)
             integrity_status = INTEGRITY_ERROR
@@ -1371,6 +1461,7 @@ def inspect_member_stream(
                 error,
                 bom=detect_bom(head) or BOM_NOT_PRESENT,
                 integrity_status=integrity_status,
+                sha256=digest.hexdigest() if error is None else None,
             )
         ]
 
@@ -1513,23 +1604,68 @@ def prepare_archive_members(
     return None
 
 
+def retain_archive_folders(node, directories, rows, budget) -> list[ResultRow]:
+    """Keep terminal listed folders that no existing leaf row represents."""
+    paths = {split_archive_path(name) for name in directories}
+    paths.discard(())
+    ancestors = {parts[:index] for parts in paths for index in range(1, len(parts))}
+    represented = {
+        row.levels[:index] for row in rows for index in range(1, len(row.levels))
+    }
+    missing = [
+        parts
+        for parts in sorted(paths)
+        if parts not in ancestors and node.levels + parts not in represented
+    ]
+    if not missing:
+        return rows
+    try:
+        budget.expand_one_row(len(missing) + 1)
+    except BudgetExceeded as exc:
+        reason = "Folder placeholders omitted: " + exception_text(exc)
+        if rows:
+            rows[-1] = replace(rows[-1], error=join_errors(rows[-1].error, reason))
+            return rows
+        return [archive_row(node, "Archive", reason)]
+    return rows + [
+        folder_placeholder(
+            node.logical_path + "::" + "\\".join(parts),
+            node.levels + parts,
+            in_archive=True,
+        )
+        for parts in missing
+    ]
+
+
+def join_errors(first: str | None, second: str) -> str:
+    return f"{first}; {second}" if first else second
+
+
 def expand_zip(
     node: ArchiveNode,
     temp_dir: str,
     budget: WorkBudget,
 ) -> list[ResultRow]:
     rows: list[ResultRow] = []
+    directories = []
     try:
         with zipfile.ZipFile(extended_path(node.source_path)) as archive:
-            infos = [info for info in archive.infolist() if not info.is_dir()]
+            entries = archive.infolist()
+            directories = [info.filename for info in entries if info.is_dir()]
+            infos = [info for info in entries if not info.is_dir()]
             if not infos:
-                return [
-                    archive_row(
-                        node,
-                        "ZIP archive (empty)",
-                        integrity_status=INTEGRITY_VERIFIED,
-                    )
-                ]
+                return retain_archive_folders(
+                    node,
+                    directories,
+                    [
+                        archive_row(
+                            node,
+                            "ZIP archive (empty)",
+                            integrity_status=INTEGRITY_VERIFIED,
+                        )
+                    ],
+                    budget,
+                )
             limit_rows = prepare_archive_members(node, infos, budget, "ZIP archive")
             if limit_rows is not None:
                 return limit_rows
@@ -1573,7 +1709,7 @@ def expand_zip(
                     )
     except Exception as exc:
         return [archive_row(node, "ZIP archive", exception_text(exc))]
-    return rows
+    return retain_archive_folders(node, directories, rows, budget)
 
 
 class MemberCaptureIO(Py7zIO):
@@ -1595,10 +1731,12 @@ class MemberCaptureIO(Py7zIO):
         self.temp_path: str | None = None
         self.output = None
         self.oversized = False
+        self.digest = hashlib.sha256()
 
     def write(self, chunk):
         raw = bytes(chunk)
         self.budget.consume_expanded(len(raw))
+        self.digest.update(raw)
         if self.mode == "archive":
             self.output.write(raw)
             self.total_written += len(raw)
@@ -1689,11 +1827,14 @@ def expand_7z(
     budget: WorkBudget,
 ) -> list[ResultRow]:
     infos = []
+    directories = []
     factory = None
     extraction_exception: Exception | None = None
     try:
         with py7zr.SevenZipFile(extended_path(node.source_path), mode="r") as archive:
-            infos = [info for info in archive.list() if not info.is_directory]
+            entries = archive.list()
+            directories = [info.filename for info in entries if info.is_directory]
+            infos = [info for info in entries if not info.is_directory]
             if not infos:
                 if archive.needs_password():
                     return [
@@ -1704,13 +1845,18 @@ def expand_7z(
                             integrity_status=INTEGRITY_NOT_VERIFIED,
                         )
                     ]
-                return [
-                    archive_row(
-                        node,
-                        "7z archive (empty)",
-                        integrity_status=INTEGRITY_VERIFIED,
-                    )
-                ]
+                return retain_archive_folders(
+                    node,
+                    directories,
+                    [
+                        archive_row(
+                            node,
+                            "7z archive (empty)",
+                            integrity_status=INTEGRITY_VERIFIED,
+                        )
+                    ],
+                    budget,
+                )
             if len(infos) > SEVEN_ZIP_INSPECT_MAX_MEMBERS:
                 return seven_zip_limit_rows(
                     node,
@@ -1811,9 +1957,10 @@ def expand_7z(
                     True,
                     bom=BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
+                    sha256=hashlib.sha256(b"").hexdigest(),
                 )
             )
-        elif product is None or not product.head:
+        elif product is None or not product.head or product.total_written != size:
             rows.append(
                 make_row(
                     logical_path,
@@ -1821,7 +1968,7 @@ def expand_7z(
                     size,
                     "Not inspected",
                     True,
-                    "No captured member data",
+                    "Missing or incomplete captured member data",
                     integrity_status=INTEGRITY_ERROR,
                 )
             )
@@ -1844,6 +1991,7 @@ def expand_7z(
                 levels,
                 size,
                 node.depth + 1,
+                sha256=product.digest.hexdigest(),
             )
             try:
                 rows.extend(process_archive_node(child, temp_dir, budget=budget))
@@ -1862,9 +2010,10 @@ def expand_7z(
                     True,
                     bom=detect_bom(bytes(product.head)) or BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
+                    sha256=product.digest.hexdigest(),
                 )
             )
-    return rows
+    return retain_archive_folders(node, directories, rows, budget)
 
 
 def configure_rar_backend() -> None:
@@ -1892,9 +2041,12 @@ def expand_rar(
     budget: WorkBudget,
 ) -> list[ResultRow]:
     rows: list[ResultRow] = []
+    directories = []
     try:
         with rarfile.RarFile(extended_path(node.source_path)) as archive:
-            infos = [info for info in archive.infolist() if not info.is_dir()]
+            entries = archive.infolist()
+            directories = [info.filename for info in entries if info.is_dir()]
+            infos = [info for info in entries if not info.is_dir()]
             if not infos:
                 if archive.needs_password():
                     return [
@@ -1905,13 +2057,18 @@ def expand_rar(
                             integrity_status=INTEGRITY_NOT_VERIFIED,
                         )
                     ]
-                return [
-                    archive_row(
-                        node,
-                        "RAR archive (empty)",
-                        integrity_status=INTEGRITY_VERIFIED,
-                    )
-                ]
+                return retain_archive_folders(
+                    node,
+                    directories,
+                    [
+                        archive_row(
+                            node,
+                            "RAR archive (empty)",
+                            integrity_status=INTEGRITY_VERIFIED,
+                        )
+                    ],
+                    budget,
+                )
             limit_rows = prepare_archive_members(node, infos, budget, "RAR archive")
             if limit_rows is not None:
                 return limit_rows
@@ -1955,7 +2112,7 @@ def expand_rar(
                     )
     except Exception as exc:
         return [archive_row(node, "RAR archive", exception_text(exc))]
-    return rows
+    return retain_archive_folders(node, directories, rows, budget)
 
 
 def process_archive_node(
@@ -2027,6 +2184,15 @@ def process_file(
 ) -> list[ResultRow]:
     if budget is None:
         budget = WorkBudget(rows_claimed=1)
+    if item.virtual_folder:
+        return [
+            folder_placeholder(
+                item.path,
+                item.levels,
+                in_archive=False,
+                unreadable=item.folder_unreadable,
+            )
+        ]
     if not item.inspect_content:
         if item.link_type is not None:
             content_type = "Filesystem link (not followed)"
@@ -2073,6 +2239,12 @@ def process_file(
         error = "File could not be read"
     elif file_type == "ZIP container (unreadable)":
         error = "Invalid or unsupported ZIP container"
+    digest = None
+    if error is None:
+        try:
+            digest = file_digest(item.path, item.size)
+        except OSError as exc:
+            error = exception_text(exc)
     return [
         make_row(
             item.path,
@@ -2086,6 +2258,7 @@ def process_file(
             item_type=item.item_type,
             link_type=item.link_type,
             link_target=item.link_target,
+            sha256=digest,
         )
     ]
 
@@ -2140,18 +2313,23 @@ def apply_physical_row_limit(
     root_folder: str,
 ) -> tuple[list[PhysicalFile], int]:
     """Select a deterministic physical subset that can fit the logical-row budget."""
-    total = len(physical_files)
-    omitted = max(total - max_rows, 0)
+    total = sum(not item.virtual_folder for item in physical_files)
+    omitted = max(len(physical_files) - max_rows, 0)
     if omitted == 0:
         return physical_files, total
 
     stats.skipped_entries += omitted
+    omitted_kind = (
+        "physical items or folder placeholders"
+        if any(item.virtual_folder for item in physical_files[max_rows:])
+        else "physical items"
+    )
     stats.diagnostics.append(
         Diagnostic(
             root_folder,
             "row limit",
             (
-                f"{omitted:,} physical items omitted because the logical-row "
+                f"{omitted:,} {omitted_kind} omitted because the logical-row "
                 f"budget is {max_rows:,} rows"
             ),
         )
@@ -2302,7 +2480,9 @@ def write_workbook(
         "Полный путь к файлу",
         "Имя файла",
         "Расширение",
+        "Исходный суффикс",
         "Полное имя файла",
+        "SHA-256",
         "Тип элемента",
         "Распознанная роль",
         "Тип ссылки",
@@ -2395,6 +2575,8 @@ def write_workbook(
         last_table_column = first_table_column + len(headers) - 1
         sheet.set_column(0, 0, 5.81640625 - 5 / 7)
         wide_columns = {
+            "SHA-256": 67,
+            "Исходный суффикс": 24,
             "Полный путь к файлу": 42,
             "Имя файла": 20,
             "Полное имя файла": 24,
@@ -2510,7 +2692,9 @@ def write_workbook(
         }
         for row_number, row in enumerate(rows, start=1):
             properties = row.properties
-            stem_name = ntpath.splitext(row.leaf_name)[0]
+            stem_name = (
+                ntpath.splitext(row.leaf_name)[0] if row.extension else row.leaf_name
+            )
             values = [
                 *(
                     row.levels[index] if index < len(row.levels) else None
@@ -2520,7 +2704,9 @@ def write_workbook(
                 row.full_path,
                 stem_name,
                 row.extension,
+                raw_extension_of(row.leaf_name) if not row.virtual_folder else None,
                 row.leaf_name,
+                row.sha256,
                 row.item_type,
                 row.recognized_role,
                 row.link_type,
@@ -2592,7 +2778,13 @@ def write_workbook(
                 )
 
             output_row.append(
-                styled_cell(ws, 1, font=normal_font, border=border, alignment=centered)
+                styled_cell(
+                    ws,
+                    int(not row.virtual_folder),
+                    font=normal_font,
+                    border=border,
+                    alignment=centered,
+                )
             )
             ws.append(output_row)
 
@@ -2607,7 +2799,7 @@ def write_workbook(
                 started_at=now,
                 completed_at=now,
                 workers=DEFAULT_WORKERS,
-                physical_items=len(rows),
+                physical_items=sum(not row.virtual_folder for row in rows),
                 logical_rows=len(rows),
                 row_errors=sum(row.error is not None for row in rows),
                 stats=ScanStats(),
@@ -2628,6 +2820,7 @@ def write_workbook(
         status.set_header("", {"margin": 0.5})
         status.set_footer("", {"margin": 0.5})
         status.set_row(16, 32)
+        status.set_row(18, 32)
 
         status_header = [
             styled_cell(
@@ -2679,9 +2872,17 @@ def write_workbook(
                 "Семантика",
                 (
                     "Логический файловый инвентарь: обычные папки задают иерархию; "
-                    "поддерживаемые архивы раскрываются до конечных файлов."
+                    "архивы раскрываются до конечных файлов. dummy.dummy — виртуальная "
+                    "строка папки, не файл; last=0, SHA-256 отсутствует."
                 ),
             ),
+            ("Виртуальные строки папок", sum(row.virtual_folder for row in rows)),
+            (
+                "Хеш",
+                "SHA-256 полного содержимого; отсутствует для ссылок, виртуальных и непрочитанных элементов.",
+            ),
+            ("Строк с SHA-256", sum(row.sha256 is not None for row in rows)),
+            ("Файловые строки (last=1)", sum(not row.virtual_folder for row in rows)),
         ]
         for label, value in summary_rows:
             if isinstance(value, datetime):
@@ -2699,7 +2900,7 @@ def write_workbook(
                 value_fill = green_fill if value == "COMPLETE" else amber_fill
                 value_font = title_font
                 value_alignment = centered
-            elif label == "Семантика":
+            elif label in ("Семантика", "Хеш"):
                 value_alignment = {"valign": "top", "text_wrap": True}
             status_ws.append(
                 [
@@ -2746,7 +2947,8 @@ def write_workbook(
                 if row.error is not None
             ),
         )
-        max_diagnostic_rows = 1_048_576 - 19
+        diagnostic_header_row = len(summary_rows) + 3
+        max_diagnostic_rows = 1_048_576 - diagnostic_header_row
         displayed_diagnostics = (
             max_diagnostic_rows - 1
             if diagnostic_total > max_diagnostic_rows
@@ -2786,12 +2988,12 @@ def write_workbook(
         if diagnostic_total:
             for worksheet_row, diagnostic in enumerate(
                 islice(diagnostic_iterator, displayed_diagnostics),
-                start=20,
+                start=diagnostic_header_row + 1,
             ):
                 append_diagnostic(worksheet_row, diagnostic)
             if diagnostic_total > displayed_diagnostics:
                 append_diagnostic(
-                    20 + displayed_diagnostics,
+                    diagnostic_header_row + 1 + displayed_diagnostics,
                     Diagnostic(
                         "",
                         "diagnostics truncated",
@@ -2948,17 +3150,20 @@ def scan_and_report(
         {normalized_key(str(output_path))},
         args.workers,
     )
-    print(f"Physical items found: {len(physical_files):,}")
+    print(
+        f"Physical items found: {sum(not item.virtual_folder for item in physical_files):,}"
+    )
     physical_files, physical_items_found = apply_physical_row_limit(
         physical_files,
         args.max_rows,
         stats,
         root_folder,
     )
-    if len(physical_files) < physical_items_found:
+    selected_physical = sum(not item.virtual_folder for item in physical_files)
+    if selected_physical < physical_items_found:
         print(
-            f"Physical items selected for inspection: {len(physical_files):,} "
-            f"({physical_items_found - len(physical_files):,} omitted by row limit)"
+            f"Physical items selected for inspection: {selected_physical:,} "
+            f"({physical_items_found - selected_physical:,} omitted by row limit)"
         )
 
     max_expanded_bytes = (

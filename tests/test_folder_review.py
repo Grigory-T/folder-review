@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import os
 import re
@@ -13,6 +14,7 @@ import zipfile
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import py7zr
@@ -59,6 +61,226 @@ class FolderReviewTests(unittest.TestCase):
             properties=folder_review.file_properties(path.name, stat_result),
         )
         return folder_review.process_file(item)
+
+    def test_sha256_matches_physical_zip_7z_and_nested_content(self) -> None:
+        payload = b"\xef\xbb\xbfduplicate payload" + bytes(range(256)) * 5000
+        expected = hashlib.sha256(payload).hexdigest()
+        first = self.root / "first.bin"
+        first.write_bytes(payload)
+        second = self.root / "different-name.txt"
+        second.write_bytes(payload)
+        zipped = self.make_zip(
+            self.root / "data.zip", {"payload.bin": payload, "empty": b""}
+        )
+        seven = self.make_7z(
+            self.root / "data.7z", {"payload.bin": payload, "empty": b""}
+        )
+        nested = self.make_zip(self.root / "outer.zip", {"inner.7z": seven})
+        for path in (first, second, zipped, seven, nested):
+            with self.subTest(path=path.name):
+                rows = self.inspect(path)
+                self.assertTrue(all(row.error is None for row in rows), rows)
+                for row in rows:
+                    self.assertEqual(
+                        row.sha256,
+                        hashlib.sha256(b"").hexdigest()
+                        if row.leaf_name == "empty"
+                        else expected,
+                    )
+        self.assertEqual(self.inspect(first)[0].sha256, self.inspect(second)[0].sha256)
+
+    def test_incomplete_or_changed_content_has_no_hash(self) -> None:
+        source = self.root / "data.txt"
+        source.write_bytes(b"data")
+        item = folder_review.PhysicalFile(str(source), (source.name,), 5)
+        row = folder_review.process_file(item)[0]
+        self.assertIsNone(row.sha256)
+        self.assertIn("changed during inspection", row.error)
+        with folder_review.archive_temp_directory() as directory:
+            row = folder_review.inspect_member_stream(
+                io.BytesIO(b"partial"),
+                size=100,
+                logical_path="data.zip::member.txt",
+                levels=("data.zip", "member.txt"),
+                parent_depth=0,
+                temp_dir=directory,
+                budget=folder_review.WorkBudget(),
+            )[0]
+        self.assertIsNone(row.sha256)
+        self.assertIsNotNone(row.error)
+        self.assertEqual(row.integrity_status, folder_review.INTEGRITY_ERROR)
+        before = source.stat()
+        after = SimpleNamespace(
+            **{
+                key: getattr(before, key)
+                for key in ("st_size", "st_mtime_ns", "st_ctime_ns", "st_ino", "st_dev")
+            }
+        )
+        after.st_mtime_ns += 1
+        with (
+            mock.patch.object(folder_review.os, "fstat", side_effect=[before, after]),
+            self.assertRaisesRegex(OSError, "changed during inspection"),
+        ):
+            folder_review.file_digest(str(source))
+
+    def test_empty_folders_have_minimal_virtual_markers_and_zero_file_count(
+        self,
+    ) -> None:
+        root = self.root / "input"
+        (root / "chain" / "empty").mkdir(parents=True)
+        (root / "sibling").mkdir()
+        (root / "filled").mkdir()
+        (root / "filled" / "dummy.dummy").write_bytes(b"real file")
+        items, _stats = folder_review.scan_tree(str(root), set(), 2)
+        rows = folder_review.inspect_files(items, 2)
+        virtual = [row for row in rows if row.virtual_folder]
+        self.assertEqual(len(virtual), 2)
+        self.assertEqual(
+            {row.levels for row in virtual},
+            {("chain", "empty", "dummy.dummy"), ("sibling", "dummy.dummy")},
+        )
+        self.assertTrue(
+            all(row.sha256 is None and row.extension == "" for row in virtual)
+        )
+        self.assertEqual(sum(not row.virtual_folder for row in rows), 1)
+        self.assertFalse((root / "sibling" / "dummy.dummy").exists())
+        self.assertFalse((root / "chain" / "empty" / "dummy.dummy").exists())
+        output = self.root / "folders.xlsx"
+        folder_review.write_workbook(rows, output, str(root))
+        book = load_workbook(output, read_only=True)
+        try:
+            sheet = book["folder_review"]
+            headers = list(
+                next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+            )
+            values = list(sheet.iter_rows(min_row=7, values_only=True))
+            self.assertEqual(sum(row[headers.index("last")] for row in values), 1)
+            self.assertEqual(
+                sum(row[headers.index("SHA-256")] is not None for row in values), 1
+            )
+        finally:
+            book.close()
+        empty = self.root / "empty-root"
+        empty.mkdir()
+        rows = folder_review.inspect_files(
+            folder_review.scan_tree(str(empty), set(), 1)[0], 1
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].virtual_folder)
+
+    def test_archive_empty_directories_are_retained_without_staging(self) -> None:
+        zipped = self.make_zip(
+            self.root / "folders.zip",
+            {
+                "parent/": b"",
+                "parent/empty/": b"",
+                "other/": b"",
+                "filled/": b"",
+                "filled/file.txt": b"content",
+            },
+        )
+        source = self.root / "directories"
+        (source / "parent" / "empty").mkdir(parents=True)
+        (source / "other").mkdir()
+        (source / "filled").mkdir()
+        (source / "filled" / "file.txt").write_bytes(b"content")
+        seven = self.root / "folders.7z"
+        with py7zr.SevenZipFile(seven, "w") as archive:
+            archive.writeall(source, arcname="collection")
+        for path in (zipped, seven):
+            rows = self.inspect(path)
+            markers = [row for row in rows if row.virtual_folder]
+            self.assertEqual(len(markers), 2, rows)
+            self.assertEqual({row.levels[-2] for row in markers}, {"empty", "other"})
+            self.assertTrue(
+                all(row.sha256 is None and row.in_archive == "да" for row in markers)
+            )
+            self.assertTrue(all(row.error is None for row in rows), rows)
+
+    def test_rar_folder_markers_and_stream_hash(self) -> None:
+        source = self.root / "mock.rar"
+        source.write_bytes(b"mock archive")
+        node = folder_review.ArchiveNode(
+            str(source), str(source), (source.name,), source.stat().st_size, 0
+        )
+        payload = b"RAR member content"
+        archive = mock.MagicMock()
+        archive.__enter__.return_value = archive
+        archive.infolist.return_value = [
+            SimpleNamespace(filename="empty/deep/", is_dir=lambda: True),
+            SimpleNamespace(
+                filename="file.txt", file_size=len(payload), is_dir=lambda: False
+            ),
+        ]
+        archive.open.side_effect = lambda info: io.BytesIO(payload)
+        with (
+            mock.patch.object(folder_review.rarfile, "RarFile", return_value=archive),
+            folder_review.archive_temp_directory() as directory,
+        ):
+            rows = folder_review.expand_rar(
+                node, directory, folder_review.WorkBudget(rows_claimed=1)
+            )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].sha256, hashlib.sha256(payload).hexdigest())
+        self.assertTrue(rows[1].virtual_folder)
+        self.assertEqual(rows[1].levels, ("mock.rar", "empty", "deep", "dummy.dummy"))
+
+    def test_folder_markers_obey_logical_row_limit(self) -> None:
+        root = self.root / "input"
+        for name in ("a", "b", "c"):
+            (root / name).mkdir(parents=True)
+        items, stats = folder_review.scan_tree(str(root), set(), 1)
+        selected, physical_count = folder_review.apply_physical_row_limit(
+            items, 2, stats, str(root)
+        )
+        self.assertEqual(physical_count, 0)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(stats.skipped_entries, 1)
+        archive = self.make_zip(self.root / "only-folders.zip", {"empty/": b""})
+        row = folder_review.process_file(
+            folder_review.PhysicalFile(
+                str(archive), (archive.name,), archive.stat().st_size
+            ),
+            folder_review.WorkBudget(max_rows=1, rows_claimed=1),
+        )[0]
+        self.assertIn("Folder placeholders omitted", row.error)
+
+    def test_extension_heuristics_preserve_real_suffixes_and_raw_metadata(self) -> None:
+        expected = {
+            "1.3.3-cp314-cp314-win_amd64": "",
+            "3.1.5-py2.py3-none-any": "",
+            "cpython-3.14-windows-x86_64-none": "",
+            "1.2.3": "",
+            "cache.32_13426590566142933": "",
+            "cache.4_13429547779578144": "",
+            "ttx.1": "1",
+            "openssl.3": "3",
+            "archive.tar.gz": "gz",
+            "name.jupyterlab-workspace": "jupyterlab-workspace",
+            "template.nuspectemplate": "nuspectemplate",
+            "data.db-journal": "db-journal",
+            "package-1.3.3-cp314-cp314-win_amd64.whl": "whl",
+            "report.vsdx": "vsdx",
+            "1.2.3-release.zip": "zip",
+            "1.2.3-py3-none-any.whl": "whl",
+        }
+        for name, suffix in expected.items():
+            self.assertEqual(folder_review.extension_of(name), suffix, name)
+        row = folder_review.make_row("data/1.2.3", ("1.2.3",), 0, "Text", False)
+        output = self.root / "suffix.xlsx"
+        folder_review.write_workbook([row], output, "data", full_metadata=True)
+        book = load_workbook(output, read_only=True)
+        try:
+            sheet = book["folder_review"]
+            headers = list(
+                next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+            )
+            values = next(sheet.iter_rows(min_row=7, values_only=True))
+            self.assertEqual(values[headers.index("Имя файла")], "1.2.3")
+            self.assertIn(values[headers.index("Расширение")], (None, ""))
+            self.assertEqual(values[headers.index("Исходный суффикс")], "3")
+        finally:
+            book.close()
 
     def test_writer_text_types_unicode_and_dates(self) -> None:
         source = self.root / "metadata.txt"
@@ -418,10 +640,15 @@ class FolderReviewTests(unittest.TestCase):
         import io
 
         content = b"PK\x03\x04document bytes"
-        with folder_review.archive_temp_directory() as directory:
+        with (
+            folder_review.archive_temp_directory() as directory,
+            mock.patch.object(
+                folder_review, "MAX_NESTED_ARCHIVE_SIZE", len(content) - 1
+            ),
+        ):
             rows = folder_review.inspect_member_stream(
                 io.BytesIO(content),
-                size=folder_review.MAX_NESTED_ARCHIVE_SIZE + 1,
+                size=len(content),
                 logical_path="outer.zip::document.vsdx",
                 levels=("outer.zip", "document.vsdx"),
                 parent_depth=folder_review.MAX_ARCHIVE_DEPTH - 1,
@@ -450,6 +677,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(rows[0].leaf_name, "large.txt")
         self.assertIsNotNone(rows[0].error)
         self.assertIn("BadZipFile", rows[0].error)
+        self.assertIsNone(rows[0].sha256)
         self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
 
     def test_bad_7z_crc_is_reported_after_all_bytes_are_captured(self) -> None:
@@ -474,6 +702,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(rows[0].content_type, "Text (UTF-8 / ASCII)")
         self.assertIsNotNone(rows[0].error)
         self.assertIn("CrcError", rows[0].error)
+        self.assertIsNone(rows[0].sha256)
         self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
 
     def test_encrypted_7z_preserves_known_member_names(self) -> None:
@@ -494,6 +723,7 @@ class FolderReviewTests(unittest.TestCase):
             {"first.txt", "second.txt"},
         )
         self.assertTrue(all(row.error for row in rows))
+        self.assertTrue(all(row.sha256 is None for row in rows))
         self.assertTrue(all("PasswordRequired" in row.error for row in rows))
         self.assertTrue(
             all(
@@ -606,6 +836,9 @@ class FolderReviewTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].content_type, "RAR archive (empty)")
+        self.assertEqual(
+            rows[0].sha256, hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        )
         self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_VERIFIED)
         self.assertIsNone(rows[0].error)
 
@@ -815,7 +1048,9 @@ class FolderReviewTests(unittest.TestCase):
             )
 
         self.assertEqual(subfolders, [])
-        self.assertEqual(files, [])
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].virtual_folder)
+        self.assertTrue(files[0].folder_unreadable)
         self.assertTrue(skipped)
         self.assertEqual(len(diagnostics), 1)
         self.assertEqual(diagnostics[0].path, str(self.root))
