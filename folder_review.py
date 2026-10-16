@@ -973,13 +973,22 @@ def file_digest(path: str, expected_size: int | None = None) -> str:
     total = 0
     with open(extended_path(path), "rb") as stream:
         before = os.fstat(stream.fileno())
-        while chunk := stream.read(1024 * 1024):
+        if expected_size is not None and before.st_size != expected_size:
+            raise OSError("File changed during inspection; SHA-256 was not retained")
+        remaining = before.st_size
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
             digest.update(chunk)
             total += len(chunk)
+            remaining -= len(chunk)
+        grew = bool(stream.read(1))
         after = os.fstat(stream.fileno())
     fields = ("st_size", "st_mtime_ns", "st_ctime_ns", "st_ino", "st_dev")
     if (
-        any(getattr(before, key) != getattr(after, key) for key in fields)
+        grew
+        or any(getattr(before, key) != getattr(after, key) for key in fields)
         or total != before.st_size
         or (expected_size is not None and total != expected_size)
     ):
