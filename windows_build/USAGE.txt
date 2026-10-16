@@ -1,4 +1,4 @@
-Folder Review 0.9.0 - Windows x86-64
+Folder Review 0.10.0 - Windows x86-64
 
 Copy this folder to a writable local folder on the Windows computer.
 Run folder-review.exe and enter the folder to inspect when prompted.
@@ -22,15 +22,21 @@ The default workbook omits advanced filesystem metadata and the raw suffix,
 retaining Hidden and all content/inspection columns. Add --full-metadata for all columns.
 Actual inspected file paths/names remain in the workbook. Keep reports private.
 
-SHA-256 hashes complete file content, including readable archive members.
-For duplicate pivots: exclude blank SHA-256, group by hash, sum last.
-Hashing reads whole files and increases disk/SMB traffic. Unreadable or changing
-content, links and virtual folder rows have no hash; this is not a snapshot.
-Virtual dummy.dummy rows retain folders without inventoried leaves. No file is
-created. Their path points to the folder, item type identifies a virtual folder,
-hash and extension are blank, and last=0. Ordinary file rows use last=1.
-Recognizable version/cache suffixes are filtered in the Extension column;
-the original suffix remains available with --full-metadata.
+Content group IDs start at 1; equal fully read contents share an ID.
+For duplicate pivots: exclude blank IDs, group by Content group, sum last.
+IDs belong to this report only. Internal BLAKE3-256 uses native code and reusable
+read buffers; full-file hashing increases disk/SMB traffic. Unreadable/changing
+content and links have no ID; this is not a filesystem snapshot.
+Raw BLAKE3 is available with --full-metadata.
+
+last is ALWAYS 1. Filter Virtual row and Status to select rows for analysis.
+Virtual markers: dummy.dummy (no inventoried files), deny.deny (access denied),
+password.password, corrupt.corrupt, limit.limit and error.error. No file is
+created. Original locations remain in hierarchy/full paths; errors and known
+sizes remain visible. Virtual rows have no content ID or extension.
+File type group and subgroup provide two levels above the extension, using
+fixed common categories. Content recognition remains a separate column.
+Recognizable version/cache suffixes are filtered; --full-metadata keeps the raw suffix.
 
 Review the scan_status worksheet:
   Exit 0: COMPLETE inventory.

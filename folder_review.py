@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import hashlib
 import ntpath
 import os
 import re
@@ -32,6 +31,7 @@ import olefile
 import py7zr
 import rarfile
 import xlsxwriter
+from blake3 import blake3
 from py7zr import Py7zIO, WriterFactory
 from xlsxwriter.color import Color
 from xlsxwriter.utility import xl_col_to_name
@@ -46,6 +46,7 @@ OUTPUT_FILE = "folder-review.xlsx"
 # inventory keeps fields useful for an ordinary content/folder review.
 ADVANCED_METADATA_HEADERS = frozenset(
     {
+        "Хеш содержимого (BLAKE3)",
         "Исходный суффикс",
         "Тип ссылки",
         "Цель ссылки",
@@ -309,6 +310,7 @@ class PhysicalFile:
     inspect_content: bool = True
     virtual_folder: bool = False
     folder_unreadable: bool = False
+    folder_error: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -319,7 +321,7 @@ class ArchiveNode:
     size: int
     depth: int
     properties: FileProperties | None = None
-    sha256: str | None = None
+    content_hash: bytes | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -339,8 +341,13 @@ class ResultRow:
     integrity_status: str | None = None
     properties: FileProperties | None = None
     error: str | None = None
-    sha256: str | None = None
+    content_hash: bytes | None = None
     virtual_folder: bool = False
+    virtual_reason: str | None = None
+
+    @property
+    def is_virtual(self) -> bool:
+        return self.virtual_folder or self.virtual_reason is not None
 
 
 @dataclass(slots=True, frozen=True)
@@ -740,6 +747,222 @@ def raw_extension_of(name: str) -> str:
     return ntpath.splitext(name)[1].lstrip(".").lower()
 
 
+VIRTUAL_MARKERS = {
+    "empty": ("dummy.dummy", "Нет файловых строк"),
+    "denied": ("deny.deny", "Нет доступа"),
+    "password": ("password.password", "Требуется пароль"),
+    "corrupt": ("corrupt.corrupt", "Ошибка целостности"),
+    "limit": ("limit.limit", "Лимит инспекции"),
+    "error": ("error.error", "Ошибка инспекции"),
+    "uninspected": ("error.error", "Не прочитано"),
+}
+
+
+def problem_kind(error: str) -> str:
+    # Quoted filenames such as password.txt are not diagnoses.
+    text = re.sub(r"(['\"]).*?\1", "", error.casefold())
+    if any(
+        part in text
+        for part in ("permissionerror:", "access is denied", "permission denied")
+    ) or re.search(r"\bwinerror\s+5\b", text):
+        return "denied"
+    if any(
+        part in text
+        for part in (
+            "crcerror:",
+            "bad crc",
+            "crc failed",
+            "crc mismatch",
+            "checksum mismatch",
+            "cyclic redundancy",
+            "corrupt archive",
+        )
+    ):
+        return "corrupt"
+    if re.search(
+        r"password(?:required|wrong|incorrect)?\s*:|password (?:is )?required|(?:without a|wrong|incorrect|invalid) password|encrypted (?:7z|rar) headers",
+        text,
+    ):
+        return "password"
+    if any(
+        part in text
+        for part in (
+            "budgetexceeded:",
+            "archive nesting limit",
+            "nested archive exceeds",
+            "content not read: more than",
+        )
+    ):
+        return "limit"
+    return "error"
+
+
+def display_row(row: ResultRow) -> ResultRow:
+    """Keep failed locations in hierarchy with a clearly virtual marker leaf."""
+    if row.is_virtual or not row.error or row.content_hash is not None:
+        return row
+    reason = problem_kind(row.error)
+    name = VIRTUAL_MARKERS[reason][0]
+    return replace(
+        row,
+        levels=row.levels + (name,),
+        leaf_name=name,
+        extension="",
+        content_hash=None,
+        virtual_reason=reason,
+        item_type="Виртуальная строка",
+    )
+
+
+# Practical MIME-style families, subdividing application/* into useful groups.
+# Fixed lists keep Windows/Python/EXE classification independent of OS registry.
+_EXTENSION_GROUPS = (
+    (
+        "Документы",
+        "Текстовые документы",
+        "doc docx docm dot dotx dotm odt ott rtf pages wpd",
+    ),
+    ("Документы", "Таблицы", "xls xlsx xlsm xlsb xlt xltx xltm xlc ods ots numbers"),
+    (
+        "Документы",
+        "Презентации",
+        "ppt pptx pptm pot potx potm pps ppsx ppsm odp otp key",
+    ),
+    ("Документы", "PDF и печатные документы", "pdf xps oxps ps eps"),
+    ("Документы", "Электронные книги", "epub mobi azw azw3 fb2 djvu djv"),
+    (
+        "Документы",
+        "Обычный текст и разметка",
+        "txt text md markdown rst adoc tex log nfo man 1 2 3 4 5 6 7 8 9",
+    ),
+    ("Документы", "Почта и календарь", "eml msg mbox pst ost ics vcf"),
+    (
+        "Изображения",
+        "Растровые изображения",
+        "jpg jpeg jpe png gif bmp dib tif tiff webp heic heif avif ico cur psd xcf",
+    ),
+    ("Изображения", "Векторные изображения", "svg svgz ai emf wmf cdr"),
+    ("Изображения", "Фотографии RAW", "raw cr2 cr3 nef nrw arw dng raf orf rw2 pef"),
+    (
+        "Аудио",
+        "Аудиозаписи",
+        "mp3 wav flac aac m4a ogg oga opus wma aiff aif ape alac amr",
+    ),
+    ("Аудио", "Музыка и списки воспроизведения", "mid midi kar m3u m3u8 pls cue"),
+    (
+        "Видео",
+        "Видеозаписи",
+        "mp4 m4v mkv avi mov qt webm wmv mpg mpeg m2v mts m2ts vob flv 3gp",
+    ),
+    ("Видео", "Субтитры", "srt ass ssa vtt sub"),
+    ("Архивы и образы", "Архивы", "zip rar 7z tar cab cpio ar lzh lha ace"),
+    ("Архивы и образы", "Сжатые файлы", "gz bz2 xz zst zstd lz lzma br z tgz tbz2 txz"),
+    (
+        "Архивы и образы",
+        "Образы дисков",
+        "iso img vhd vhdx vmdk vdi qcow qcow2 dmg wim esd",
+    ),
+    (
+        "Программы и код",
+        "Программы и библиотеки",
+        "exe dll sys ocx cpl scr com so dylib pyd wasm",
+    ),
+    (
+        "Программы и код",
+        "Пакеты и установщики",
+        "msi msp msix appx msixbundle appxbundle whl egg deb rpm apk aab ipa nupkg vsix crx xpi asar",
+    ),
+    (
+        "Программы и код",
+        "Исходный код и сценарии",
+        "py pyw pyi js mjs cjs ts tsx jsx c cc cpp cxx h hh hpp cs java class go rs rb php pl pm sh bash zsh fish bat cmd ps1 psm1 psd1 vbs vbe bas vb sql lua r swift kt kts dart scala groovy f f90 pas asm s",
+    ),
+    (
+        "Программы и код",
+        "Блокноты и сборка",
+        "ipynb make cmake sln csproj vbproj vcxproj gradle nuspec nuspectemplate",
+    ),
+    (
+        "Программы и код",
+        "Веб-страницы и стили",
+        "html htm xhtml css scss sass less asp aspx jsp vue svelte",
+    ),
+    (
+        "Данные и настройки",
+        "Табличные данные",
+        "csv tsv parquet arrow feather avro orc",
+    ),
+    (
+        "Данные и настройки",
+        "Структурированные данные",
+        "json jsonl ndjson xml xsd xsl xslt rdf ttl yaml yml toml proto pb binarypb h5 hdf5 nc npy npz mat",
+    ),
+    (
+        "Данные и настройки",
+        "Базы данных",
+        "db sqlite sqlite3 db3 mdb accdb dbf odb db-journal db-wal db-shm",
+    ),
+    (
+        "Данные и настройки",
+        "Настройки",
+        "ini cfg conf config cnf properties env reg desktop service socket target policy plist manifest jupyterlab-workspace",
+    ),
+    (
+        "Проектирование",
+        "Схемы и диаграммы",
+        "vsd vsdx vsdm vss vssx vssm vst vstx vstm drawio dia",
+    ),
+    (
+        "Проектирование",
+        "Чертежи CAD",
+        "dwg dxf dgn rvt rfa rft ifc fcstd sldprt sldasm slddrw ipt iam idw step stp iges igs",
+    ),
+    ("Проектирование", "3D-модели", "stl obj fbx blend gltf glb 3ds dae skp max"),
+    ("Шрифты", "Файлы шрифтов", "ttf otf ttc woff woff2 eot pfb pfm afm bdf pcf"),
+    (
+        "Системные и служебные",
+        "Сертификаты и ключи",
+        "pem crt cer der pfx p12 p7b keytab pub",
+    ),
+    (
+        "Системные и служебные",
+        "Кэш и временные файлы",
+        "tmp temp cache pyc pyo dmp dump swp swo part crdownload",
+    ),
+    ("Системные и служебные", "Ярлыки и ссылки", "lnk url webloc"),
+    ("Системные и служебные", "Резервные копии", "bak backup old orig sav"),
+    ("Системные и служебные", "Файлы блокировки и состояния", "lock pid state stamp"),
+)
+EXTENSION_GROUPS = {
+    extension: (family, subtype)
+    for family, subtype, extensions in _EXTENSION_GROUPS
+    for extension in extensions.split()
+}
+
+
+def file_type_groups(row: ResultRow) -> tuple[str, str]:
+    if row.is_virtual:
+        return "Служебные строки", VIRTUAL_MARKERS[row.virtual_reason or "empty"][1]
+    known = EXTENSION_GROUPS.get(row.extension)
+    if known is not None:
+        return known
+    name = row.leaf_name.casefold()
+    if name in {"dockerfile", "makefile", "gnumakefile", "cmakelists.txt"}:
+        return "Программы и код", "Блокноты и сборка"
+    if name in {
+        ".gitignore",
+        ".gitattributes",
+        ".gitmodules",
+        ".dockerignore",
+        ".env",
+        ".editorconfig",
+    }:
+        return "Данные и настройки", "Настройки"
+    if name.startswith(("license", "licence", "copying", "readme", "notice")):
+        return "Документы", "Обычный текст и разметка"
+    return "Прочее", "Неизвестное расширение" if row.extension else "Без расширения"
+
+
 def recognized_file_role(name: str, content_type: str | None = None) -> str | None:
     """Return a high-confidence role without replacing content classification."""
     lowered = name.casefold()
@@ -924,8 +1147,9 @@ def make_row(
     item_type: str | None = None,
     link_type: str | None = None,
     link_target: str | None = None,
-    sha256: str | None = None,
+    content_hash: bytes | None = None,
     virtual_folder: bool = False,
+    virtual_reason: str | None = None,
 ) -> ResultRow:
     leaf_name = levels[-1]
     content_type = refine_named_content_type(leaf_name, content_type)
@@ -933,7 +1157,7 @@ def make_row(
         levels=levels,
         full_path=full_path,
         leaf_name=leaf_name,
-        extension="" if virtual_folder else extension_of(leaf_name),
+        extension="" if virtual_folder or virtual_reason else extension_of(leaf_name),
         size=size,
         item_type=item_type or ("Файл" if properties else "Файл внутри архива"),
         recognized_role=recognized_file_role(leaf_name, content_type),
@@ -945,18 +1169,29 @@ def make_row(
         integrity_status=integrity_status,
         properties=properties,
         error=error,
-        sha256=sha256,
+        content_hash=content_hash,
         virtual_folder=virtual_folder,
+        virtual_reason=virtual_reason,
     )
 
 
 def folder_placeholder(
-    path: str, levels: tuple[str, ...], *, in_archive: bool, unreadable: bool = False
+    path: str,
+    levels: tuple[str, ...],
+    *,
+    in_archive: bool,
+    unreadable: bool = False,
+    folder_error: str | None = None,
 ) -> ResultRow:
     """A logical marker only: never create a file or hash imaginary content."""
+    reason = (
+        problem_kind(folder_error)
+        if folder_error
+        else ("uninspected" if unreadable else "empty")
+    )
     return make_row(
         path,
-        levels + ("dummy.dummy",),
+        levels + (VIRTUAL_MARKERS[reason][0],),
         0,
         "Folder contents not inspected"
         if unreadable
@@ -964,25 +1199,30 @@ def folder_placeholder(
         in_archive,
         item_type="Папка (виртуальная строка)",
         virtual_folder=True,
+        virtual_reason=reason,
     )
 
 
-def file_digest(path: str, expected_size: int | None = None) -> str:
+def file_digest(path: str, expected_size: int | None = None) -> bytes:
     """Hash complete bytes, rejecting observable changes during the read."""
-    digest = hashlib.sha256()
+    digest = blake3()
     total = 0
     with open(extended_path(path), "rb") as stream:
         before = os.fstat(stream.fileno())
         if expected_size is not None and before.st_size != expected_size:
-            raise OSError("File changed during inspection; SHA-256 was not retained")
+            raise OSError(
+                "File changed during inspection; Content fingerprint was not retained"
+            )
         remaining = before.st_size
+        buffer = bytearray(min(1024 * 1024, max(remaining, 1)))
+        view = memoryview(buffer)
         while remaining:
-            chunk = stream.read(min(1024 * 1024, remaining))
-            if not chunk:
+            count = stream.readinto(view[: min(len(buffer), remaining)])
+            if not count:
                 break
-            digest.update(chunk)
-            total += len(chunk)
-            remaining -= len(chunk)
+            digest.update(view[:count])
+            total += count
+            remaining -= count
         grew = bool(stream.read(1))
         after = os.fstat(stream.fileno())
     fields = ("st_size", "st_mtime_ns", "st_ctime_ns", "st_ino", "st_dev")
@@ -992,8 +1232,10 @@ def file_digest(path: str, expected_size: int | None = None) -> str:
         or total != before.st_size
         or (expected_size is not None and total != expected_size)
     ):
-        raise OSError("File changed during inspection; SHA-256 was not retained")
-    return digest.hexdigest()
+        raise OSError(
+            "File changed during inspection; Content fingerprint was not retained"
+        )
+    return digest.digest()
 
 
 # Content detection ----------------------------------------------------------
@@ -1273,7 +1515,15 @@ def scan_folder(
         )
         skipped_folder = True
 
-    if not subfolders and not files:
+    if skipped_folder or (not subfolders and not files):
+        folder_diagnostic = next(
+            (
+                item
+                for item in reversed(diagnostics)
+                if item.stage == "folder enumeration"
+            ),
+            diagnostics[0] if diagnostics else None,
+        )
         files.append(
             PhysicalFile(
                 folder_path,
@@ -1282,6 +1532,7 @@ def scan_folder(
                 inspect_content=False,
                 virtual_folder=True,
                 folder_unreadable=bool(diagnostics),
+                folder_error=folder_diagnostic.error if folder_diagnostic else None,
             )
         )
     return subfolders, files, diagnostics, skipped_folder
@@ -1342,7 +1593,7 @@ def archive_row(
     digest = None
     if not error and integrity_status == INTEGRITY_VERIFIED:
         try:
-            digest = node.sha256 or file_digest(node.source_path, node.size)
+            digest = node.content_hash or file_digest(node.source_path, node.size)
         except OSError as exc:
             error = exception_text(exc)
     return make_row(
@@ -1357,7 +1608,7 @@ def archive_row(
             integrity_status or (INTEGRITY_ERROR if error else INTEGRITY_NOT_VERIFIED)
         ),
         properties=node.properties,
-        sha256=digest,
+        content_hash=digest,
     )
 
 
@@ -1448,7 +1699,7 @@ def inspect_member_stream(
     archive_type = expandable_archive_type(head, levels[-1])
     if archive_type is None:
         error = None
-        digest = hashlib.sha256(head)
+        digest = blake3(head)
         total = len(head)
         integrity_status = INTEGRITY_VERIFIED
         try:
@@ -1470,7 +1721,7 @@ def inspect_member_stream(
                 error,
                 bom=detect_bom(head) or BOM_NOT_PRESENT,
                 integrity_status=integrity_status,
-                sha256=digest.hexdigest() if error is None else None,
+                content_hash=digest.digest() if error is None else None,
             )
         ]
 
@@ -1740,7 +1991,7 @@ class MemberCaptureIO(Py7zIO):
         self.temp_path: str | None = None
         self.output = None
         self.oversized = False
-        self.digest = hashlib.sha256()
+        self.digest = blake3()
 
     def write(self, chunk):
         raw = bytes(chunk)
@@ -1966,7 +2217,7 @@ def expand_7z(
                     True,
                     bom=BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
-                    sha256=hashlib.sha256(b"").hexdigest(),
+                    content_hash=blake3(b"").digest(),
                 )
             )
         elif product is None or not product.head or product.total_written != size:
@@ -2000,7 +2251,7 @@ def expand_7z(
                 levels,
                 size,
                 node.depth + 1,
-                sha256=product.digest.hexdigest(),
+                content_hash=product.digest.digest(),
             )
             try:
                 rows.extend(process_archive_node(child, temp_dir, budget=budget))
@@ -2019,7 +2270,7 @@ def expand_7z(
                     True,
                     bom=detect_bom(bytes(product.head)) or BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
-                    sha256=product.digest.hexdigest(),
+                    content_hash=product.digest.digest(),
                 )
             )
     return retain_archive_folders(node, directories, rows, budget)
@@ -2200,6 +2451,7 @@ def process_file(
                 item.levels,
                 in_archive=False,
                 unreadable=item.folder_unreadable,
+                folder_error=item.folder_error,
             )
         ]
     if not item.inspect_content:
@@ -2267,7 +2519,7 @@ def process_file(
             item_type=item.item_type,
             link_type=item.link_type,
             link_target=item.link_target,
-            sha256=digest,
+            content_hash=digest,
         )
     ]
 
@@ -2482,6 +2734,14 @@ def write_workbook(
             f"{EXCEL_MAX_DATA_ROWS:,} data rows in this layout."
         )
 
+    rows = [display_row(row) for row in rows]
+    content_groups = {}
+    for row in rows:
+        if row.content_hash is not None and not row.is_virtual:
+            key = (row.size, row.content_hash)
+            if key not in content_groups:
+                content_groups[key] = len(content_groups) + 1
+
     max_level = max((len(row.levels) for row in rows), default=0)
     level_headers = [f"Уровень {index}" for index in range(1, max_level + 1)]
     all_data_headers = level_headers + [
@@ -2489,10 +2749,15 @@ def write_workbook(
         "Полный путь к файлу",
         "Имя файла",
         "Расширение",
+        "Группа типов",
+        "Подгруппа типов",
         "Исходный суффикс",
         "Полное имя файла",
-        "SHA-256",
+        "Группа содержимого",
+        "Хеш содержимого (BLAKE3)",
         "Тип элемента",
+        "Виртуальная строка",
+        "Состояние",
         "Распознанная роль",
         "Тип ссылки",
         "Цель ссылки",
@@ -2584,7 +2849,12 @@ def write_workbook(
         last_table_column = first_table_column + len(headers) - 1
         sheet.set_column(0, 0, 5.81640625 - 5 / 7)
         wide_columns = {
-            "SHA-256": 67,
+            "Группа содержимого": 16,
+            "Хеш содержимого (BLAKE3)": 67,
+            "Группа типов": 24,
+            "Подгруппа типов": 30,
+            "Виртуальная строка": 16,
+            "Состояние": 24,
             "Исходный суффикс": 24,
             "Полный путь к файлу": 42,
             "Имя файла": 20,
@@ -2655,6 +2925,8 @@ def write_workbook(
         ws.append(header_row)
 
         centered_headers = {
+            "Группа содержимого",
+            "Виртуальная строка",
             "Уровень листа",
             "Расширение",
             "Тип элемента",
@@ -2701,6 +2973,18 @@ def write_workbook(
         }
         for row_number, row in enumerate(rows, start=1):
             properties = row.properties
+            family, subtype = file_type_groups(row)
+            state = (
+                VIRTUAL_MARKERS[row.virtual_reason or "empty"][1]
+                if row.is_virtual
+                else VIRTUAL_MARKERS[problem_kind(row.error)][1]
+                if row.error
+                else "Прочитан"
+                if row.content_hash is not None
+                else "Ссылка"
+                if row.link_type
+                else "Не хеширован"
+            )
             stem_name = (
                 ntpath.splitext(row.leaf_name)[0] if row.extension else row.leaf_name
             )
@@ -2713,10 +2997,17 @@ def write_workbook(
                 row.full_path,
                 stem_name,
                 row.extension,
-                raw_extension_of(row.leaf_name) if not row.virtual_folder else None,
+                family,
+                subtype,
+                raw_extension_of(row.leaf_name) if not row.is_virtual else None,
                 row.leaf_name,
-                row.sha256,
+                content_groups.get((row.size, row.content_hash))
+                if not row.is_virtual
+                else None,
+                row.content_hash.hex() if row.content_hash is not None else None,
                 row.item_type,
+                "да" if row.is_virtual else "нет",
+                state,
                 row.recognized_role,
                 row.link_type,
                 row.link_target,
@@ -2789,7 +3080,7 @@ def write_workbook(
             output_row.append(
                 styled_cell(
                     ws,
-                    int(not row.virtual_folder),
+                    1,
                     font=normal_font,
                     border=border,
                     alignment=centered,
@@ -2804,11 +3095,17 @@ def write_workbook(
         if report is None:
             now = local_now()
             report = RunReport(
-                status="COMPLETE",
+                status="PARTIAL"
+                if any(
+                    row.error
+                    or (row.is_virtual and row.virtual_reason not in (None, "empty"))
+                    for row in rows
+                )
+                else "COMPLETE",
                 started_at=now,
                 completed_at=now,
                 workers=DEFAULT_WORKERS,
-                physical_items=sum(not row.virtual_folder for row in rows),
+                physical_items=sum(not row.is_virtual for row in rows),
                 logical_rows=len(rows),
                 row_errors=sum(row.error is not None for row in rows),
                 stats=ScanStats(),
@@ -2881,17 +3178,18 @@ def write_workbook(
                 "Семантика",
                 (
                     "Логический файловый инвентарь: обычные папки задают иерархию; "
-                    "архивы раскрываются до конечных файлов. dummy.dummy — виртуальная "
-                    "строка папки, не файл; last=0, SHA-256 отсутствует."
+                    "last всегда 1. Фильтр «Виртуальная строка» отделяет маркеры папок "
+                    "и ошибок; исходное место остается в полном пути."
                 ),
             ),
-            ("Виртуальные строки папок", sum(row.virtual_folder for row in rows)),
+            ("Виртуальные строки", sum(row.is_virtual for row in rows)),
             (
                 "Хеш",
-                "SHA-256 полного содержимого; отсутствует для ссылок, виртуальных и непрочитанных элементов.",
+                "BLAKE3-256 полного содержимого. Равное содержимое получает общий числовой ID от 1; ID действует только внутри отчета.",
             ),
-            ("Строк с SHA-256", sum(row.sha256 is not None for row in rows)),
-            ("Файловые строки (last=1)", sum(not row.virtual_folder for row in rows)),
+            ("Строк с отпечатком", sum(row.content_hash is not None for row in rows)),
+            ("Невиртуальные строки", sum(not row.is_virtual for row in rows)),
+            ("Групп содержимого", len(content_groups)),
         ]
         for label, value in summary_rows:
             if isinstance(value, datetime):

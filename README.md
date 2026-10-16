@@ -40,22 +40,34 @@ uv sync --frozen --no-dev
   Raw archives renamed `.bin` also remain leaves.
 - Reports include hierarchy, sizes, dates, content types, hidden flags and errors.
   Add `--full-metadata` for advanced filesystem columns.
-- `SHA-256` identifies equal complete file contents, including files inside
-  archives. For duplicate pivots, exclude blank hashes, group by `SHA-256`, and
-  sum `last`. Hashing reads whole files and increases disk/SMB traffic. Links,
-  virtual rows and incompletely read content have no hash. Observable changes
-  during hashing produce an error; this is not a filesystem snapshot.
-- Terminal folders without inventoried leaves have a virtual `dummy.dummy`
-  row, also inside archives. No dummy file is created. Its item type identifies
-  a folder, its path points to that folder, its hash/extension are blank and
-  `last=0`; ordinary file rows keep `last=1`. Unreadable folders remain unknown
-  and produce PARTIAL, even when a virtual row retains their location.
+- `Группа содержимого` is a consecutive numeric ID from 1. Equal complete
+  contents share an ID; unique contents get their own. IDs apply only within
+  one report. For duplicate pivots, exclude blank IDs, group by this column
+  and sum `last`. `scan_status` gives the total number of content groups.
+  Native BLAKE3-256 hashes full contents, reusing a read buffer and existing
+  archive decompression streams. Hashing adds disk/SMB traffic. Links,
+  virtual/unreadable rows have no ID; observable file changes produce an error.
+  This is not a filesystem snapshot. Raw BLAKE3 is available with `--full-metadata`.
+- **`last` is always 1**, including virtual rows. Filter `Виртуальная строка`
+  and `Состояние` to select the rows to count. Virtual leaves are `dummy.dummy`
+  (no inventoried files), `deny.deny` (access denied), `password.password`,
+  `corrupt.corrupt`, `limit.limit` or `error.error`. No marker file is created.
+  Failed locations stay in the hierarchy as parents of their marker; original
+  full paths, errors and known sizes remain. Virtual hash/extension are blank.
+  Errors and unreadable folders still produce PARTIAL.
 - `Расширение` filters recognizable package-cache version/ABI suffixes,
   generated numeric timestamps and suffixes longer than 64 characters.
   Unknown ordinary suffixes, long legitimate suffixes and `.1` manual pages
   remain. `--full-metadata` includes `Исходный суффикс`; filenames are unchanged.
   These display heuristics do not infer extensions from content or change
   which archive formats may expand.
+- `Группа типов` and `Подгруппа типов` add two grouping levels above the
+  extension: documents → spreadsheets, images → raster/vector, design → CAD/
+  diagrams, software → code/installers, data → tables/databases/settings, etc.
+  Fixed MIME-style families and common filename conventions work identically
+  across machines. They classify suffixes, not verified content; the existing
+  content-type column remains separate. Unknown suffixes and extensionless
+  names have explicit fallback groups. Virtual rows have their own family.
 - XlsxWriter writes both delivery formats in constant-memory mode. Filenames
   remain text, including formula-like names and URLs. Colors, filters, dates,
   hierarchy and diagnostics retain the existing layout; minor width/row-height

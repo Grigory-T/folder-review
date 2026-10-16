@@ -174,6 +174,11 @@ def main():
         "build_platform": platform.platform(),
         "package_versions": {name: d.version for name, d in distributions.items()},
         "report_writer": {"library": "XlsxWriter", "constant_memory": True},
+        "content_identity": {
+            "algorithm": "BLAKE3-256",
+            "display": "Consecutive report-local content group IDs starting at 1",
+            "last": "Always 1; filter virtual rows and states explicitly",
+        },
         "test_reader_only_packages": ["openpyxl", "et-xmlfile"],
         "sevenzip": json.loads((ROOT / "windows_build/7zip-pins.json").read_text()),
         "executable": {

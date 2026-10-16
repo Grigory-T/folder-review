@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pefile
 import py7zr
+from blake3 import blake3
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from PyInstaller.archive.readers import CArchiveReader
@@ -96,7 +97,14 @@ def inspect_payload(exe):
         assert not any(
             name == module or name.startswith(module + ".") for name in pyz.toc
         )
-    for module in ("folder_review", "xlsxwriter", "olefile", "py7zr", "rarfile"):
+    for module in (
+        "folder_review",
+        "xlsxwriter",
+        "blake3",
+        "olefile",
+        "py7zr",
+        "rarfile",
+    ):
         assert module in pyz.toc, module
     assert not any(
         name == "openpyxl" or name.startswith("openpyxl.") for name in pyz.toc
@@ -492,7 +500,28 @@ def main():
             {"inside.txt": hash_payload, "empty/deep/": b""},
         )
 
+        marker_input = base / "marker-input"
+        (marker_input / "empty").mkdir(parents=True)
+        make_seven(
+            marker_input / "protected.7z",
+            {"secret.txt": b"secret"},
+            password="test-password",
+            header_encryption=True,
+        )
+        make_zip(
+            marker_input / "bad.zip",
+            {"password.txt": b"crc content"},
+            zipfile.ZIP_STORED,
+        )
+        data = bytearray((marker_input / "bad.zip").read_bytes())
+        central = data.index(b"PK\x01\x02")
+        crc = struct.unpack_from("<I", data, central + 16)[0] ^ 1
+        struct.pack_into("<I", data, central + 16, crc)
+        struct.pack_into("<I", data, 14, crc)
+        (marker_input / "bad.zip").write_bytes(data)
+
         cases = [
+            ("presentation-markers", marker_input, [], 2, output),
             ("hashes-and-folders", hash_input, ["--full-metadata"], 0, output),
             ("complete", complete, [], 0, output),
             ("package-policy", leaf_input, [], 0, output),
@@ -534,6 +563,7 @@ def main():
                 codecs,
                 leaf_input,
                 hash_input,
+                marker_input,
                 *[case[1] for case in rar_cases],
             ]
             before = {str(folder): snapshot(folder) for folder in input_folders}
@@ -572,6 +602,30 @@ def main():
                         run.stderr,
                     )
                     current, status, count = normalized_workbook(target)
+                    if name == "presentation-markers":
+                        workbook = load_workbook(target, read_only=True, data_only=True)
+                        try:
+                            sheet = workbook["folder_review"]
+                            headings = next(
+                                sheet.iter_rows(min_row=6, max_row=6, values_only=True)
+                            )
+                            records = [
+                                dict(zip(headings, row))
+                                for row in sheet.iter_rows(min_row=7, values_only=True)
+                            ]
+                            assert {row["Полное имя файла"] for row in records} == {
+                                "dummy.dummy",
+                                "password.password",
+                                "corrupt.corrupt",
+                            }
+                            assert all(
+                                row["last"] == 1
+                                and row["Виртуальная строка"] == "да"
+                                and row["Группа содержимого"] is None
+                                for row in records
+                            )
+                        finally:
+                            workbook.close()
                     if name == "hashes-and-folders":
                         workbook = load_workbook(target, read_only=True, data_only=True)
                         try:
@@ -581,26 +635,39 @@ def main():
                             )
                             values = list(sheet.iter_rows(min_row=7, values_only=True))
                             records = [dict(zip(headings, row)) for row in values]
-                            markers = [row for row in records if row["last"] == 0]
+                            markers = [
+                                row
+                                for row in records
+                                if row["Виртуальная строка"] == "да"
+                            ]
                             assert len(markers) == 2
                             assert all(
                                 row["Полное имя файла"] == "dummy.dummy"
-                                and row["SHA-256"] is None
+                                and row["Хеш содержимого (BLAKE3)"] is None
                                 and not row["Расширение"]
                                 for row in markers
                             )
-                            assert sum(row["last"] for row in records) == 5
+                            assert all(row["last"] == 1 for row in records)
+                            groups = [
+                                row["Группа содержимого"]
+                                for row in records
+                                if row["Виртуальная строка"] == "нет"
+                            ]
+                            assert sorted(set(groups)) == [1, 2] and len(groups) == 5
+                            assert (
+                                max(groups.count(group) for group in set(groups)) == 4
+                            )
                             for row in records:
                                 leaf = row["Полное имя файла"]
                                 if leaf in hash_names | {"inside.txt"}:
                                     assert (
-                                        row["SHA-256"]
-                                        == hashlib.sha256(hash_payload).hexdigest()
+                                        row["Хеш содержимого (BLAKE3)"]
+                                        == blake3(hash_payload).hexdigest()
                                     )
                                 elif leaf == "empty-file":
                                     assert (
-                                        row["SHA-256"]
-                                        == hashlib.sha256(b"").hexdigest()
+                                        row["Хеш содержимого (BLAKE3)"]
+                                        == blake3(b"").hexdigest()
                                     )
                                 if leaf == "1.2.3-cp313-cp313-win_amd64":
                                     assert not row["Расширение"]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import io
 import os
 import re
@@ -18,6 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import py7zr
+from blake3 import blake3
 from openpyxl import load_workbook
 
 import folder_review
@@ -62,9 +62,178 @@ class FolderReviewTests(unittest.TestCase):
         )
         return folder_review.process_file(item)
 
-    def test_sha256_matches_physical_zip_7z_and_nested_content(self) -> None:
+    def test_virtual_reason_markers_are_filterable_and_last_is_always_one(self) -> None:
+        rows = [
+            folder_review.folder_placeholder(
+                "data/empty", ("empty",), in_archive=False
+            ),
+            folder_review.folder_placeholder(
+                "data/denied",
+                ("denied",),
+                in_archive=False,
+                unreadable=True,
+                folder_error="PermissionError: Access is denied",
+            ),
+        ]
+        for name, error in (
+            ("encrypted.7z", "PasswordRequired: password is required"),
+            ("broken.txt", "CrcError: CRC mismatch"),
+            ("large.zip", "BudgetExceeded: row budget exceeded"),
+            ("gone.txt", "FileNotFoundError: unavailable"),
+        ):
+            rows.append(
+                folder_review.make_row(
+                    "data/" + name, (name,), 123, "Not inspected", False, error
+                )
+            )
+        output = self.root / "markers.xlsx"
+        folder_review.write_workbook(rows, output, "data")
+        book = load_workbook(output, read_only=True)
+        try:
+            sheet = book["folder_review"]
+            headings = next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+            records = [
+                dict(zip(headings, row))
+                for row in sheet.iter_rows(min_row=7, values_only=True)
+            ]
+            self.assertEqual(
+                [row["Полное имя файла"] for row in records],
+                [
+                    "dummy.dummy",
+                    "deny.deny",
+                    "password.password",
+                    "corrupt.corrupt",
+                    "limit.limit",
+                    "error.error",
+                ],
+            )
+            self.assertTrue(
+                all(
+                    row["last"] == 1 and row["Виртуальная строка"] == "да"
+                    for row in records
+                )
+            )
+            self.assertTrue(all(row["Группа содержимого"] is None for row in records))
+            self.assertTrue(
+                all(row["Группа типов"] == "Служебные строки" for row in records)
+            )
+            self.assertEqual(
+                [row["Полный путь к файлу"] for row in records],
+                [row.full_path for row in rows],
+            )
+            self.assertEqual(records[2]["Уровень 1"], "encrypted.7z")
+            self.assertEqual(records[2]["Уровень 2"], "password.password")
+            self.assertNotIn("Хеш содержимого (BLAKE3)", headings)
+        finally:
+            book.close()
+        self.assertEqual(
+            rows[2].leaf_name, "encrypted.7z", "Rendering must not mutate scanner rows"
+        )
+
+    def test_content_group_ids_are_consecutive_and_shared_only_by_equal_content(
+        self,
+    ) -> None:
+        payloads = [b"alpha", b"beta", b"alpha", b"", None]
+        rows = [
+            replace(
+                folder_review.make_row(
+                    "data/" + name, (name,), len(data or b""), "Text", False
+                ),
+                content_hash=blake3(data).digest() if data is not None else None,
+            )
+            for name, data in zip(
+                ("one.txt", "two.txt", "deny.deny", "empty", "unhashed"), payloads
+            )
+        ]
+        output = self.root / "classes.xlsx"
+        folder_review.write_workbook(rows, output, "data", full_metadata=True)
+        book = load_workbook(output, read_only=True)
+        try:
+            sheet = book["folder_review"]
+            headings = next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+            records = [
+                dict(zip(headings, row))
+                for row in sheet.iter_rows(min_row=7, values_only=True)
+            ]
+            self.assertEqual(
+                [row["Группа содержимого"] for row in records], [1, 2, 1, 3, None]
+            )
+            self.assertTrue(
+                all(
+                    row["last"] == 1 and row["Виртуальная строка"] == "нет"
+                    for row in records
+                )
+            )
+            self.assertEqual(
+                records[2]["Полное имя файла"],
+                "deny.deny",
+                "A real marker-like name must remain an ordinary file",
+            )
+            self.assertEqual(
+                records[3]["Хеш содержимого (BLAKE3)"],
+                "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+            )
+            status = {
+                row[0]: row[1]
+                for row in book["scan_status"].iter_rows(values_only=True)
+                if row[0] is not None
+            }
+            self.assertEqual(status["Групп содержимого"], 3)
+        finally:
+            book.close()
+
+    def test_marker_reason_does_not_confuse_names_or_network_errors(self) -> None:
+        for error, expected in (
+            ("OSError: [WinError 53] Network path not found", "error"),
+            ("PermissionError: [WinError 5] Access is denied", "denied"),
+            ("FileNotFoundError: missing 'password required.txt'", "error"),
+            ("FileNotFoundError: missing 'archive nesting limit.txt'", "error"),
+            ("BadZipFile: Bad CRC-32 for file 'password.txt'", "corrupt"),
+            ("PasswordRequired: password is required", "password"),
+            (
+                "RuntimeError: file 'crc.txt' is encrypted, password required for extraction",
+                "password",
+            ),
+            ("BudgetExceeded: expanded-data budget exceeded", "limit"),
+        ):
+            self.assertEqual(folder_review.problem_kind(error), expected, error)
+
+    def test_file_type_groups_have_two_logical_levels_and_unknown_fallback(
+        self,
+    ) -> None:
+        cases = {
+            "book.xlsx": ("Документы", "Таблицы"),
+            "drawing.vsdx": ("Проектирование", "Схемы и диаграммы"),
+            "photo.png": ("Изображения", "Растровые изображения"),
+            "film.mp4": ("Видео", "Видеозаписи"),
+            "archive.tar.gz": ("Архивы и образы", "Сжатые файлы"),
+            "script.py": ("Программы и код", "Исходный код и сценарии"),
+            "package.whl": ("Программы и код", "Пакеты и установщики"),
+            "table.csv": ("Данные и настройки", "Табличные данные"),
+            "data.json": ("Данные и настройки", "Структурированные данные"),
+            "backup.bak": ("Системные и служебные", "Резервные копии"),
+            "plain": ("Прочее", "Без расширения"),
+            "data.unusual-suffix": ("Прочее", "Неизвестное расширение"),
+            ".env": ("Данные и настройки", "Настройки"),
+            "Makefile": ("Программы и код", "Блокноты и сборка"),
+        }
+        for name, expected in cases.items():
+            row = folder_review.make_row(
+                "data/" + name, (name,), 0, "Unknown binary", False
+            )
+            self.assertEqual(folder_review.file_type_groups(row), expected, name)
+        extensions = [
+            extension
+            for _, _, items in folder_review._EXTENSION_GROUPS
+            for extension in items.split()
+        ]
+        self.assertEqual(
+            len(extensions), len(set(extensions)), "Each suffix must have one grouping"
+        )
+
+    def test_fingerprints_match_physical_zip_7z_and_nested_content(self) -> None:
         payload = b"\xef\xbb\xbfduplicate payload" + bytes(range(256)) * 5000
-        expected = hashlib.sha256(payload).hexdigest()
+        expected = blake3(payload).digest()
         first = self.root / "first.bin"
         first.write_bytes(payload)
         second = self.root / "different-name.txt"
@@ -82,19 +251,19 @@ class FolderReviewTests(unittest.TestCase):
                 self.assertTrue(all(row.error is None for row in rows), rows)
                 for row in rows:
                     self.assertEqual(
-                        row.sha256,
-                        hashlib.sha256(b"").hexdigest()
-                        if row.leaf_name == "empty"
-                        else expected,
+                        row.content_hash,
+                        blake3(b"").digest() if row.leaf_name == "empty" else expected,
                     )
-        self.assertEqual(self.inspect(first)[0].sha256, self.inspect(second)[0].sha256)
+        self.assertEqual(
+            self.inspect(first)[0].content_hash, self.inspect(second)[0].content_hash
+        )
 
     def test_incomplete_or_changed_content_has_no_hash(self) -> None:
         source = self.root / "data.txt"
         source.write_bytes(b"data")
         item = folder_review.PhysicalFile(str(source), (source.name,), 5)
         row = folder_review.process_file(item)[0]
-        self.assertIsNone(row.sha256)
+        self.assertIsNone(row.content_hash)
         self.assertIn("changed during inspection", row.error)
         with folder_review.archive_temp_directory() as directory:
             row = folder_review.inspect_member_stream(
@@ -106,7 +275,7 @@ class FolderReviewTests(unittest.TestCase):
                 temp_dir=directory,
                 budget=folder_review.WorkBudget(),
             )[0]
-        self.assertIsNone(row.sha256)
+        self.assertIsNone(row.content_hash)
         self.assertIsNotNone(row.error)
         self.assertEqual(row.integrity_status, folder_review.INTEGRITY_ERROR)
         before = source.stat()
@@ -140,7 +309,7 @@ class FolderReviewTests(unittest.TestCase):
             {("chain", "empty", "dummy.dummy"), ("sibling", "dummy.dummy")},
         )
         self.assertTrue(
-            all(row.sha256 is None and row.extension == "" for row in virtual)
+            all(row.content_hash is None and row.extension == "" for row in virtual)
         )
         self.assertEqual(sum(not row.virtual_folder for row in rows), 1)
         self.assertFalse((root / "sibling" / "dummy.dummy").exists())
@@ -154,9 +323,13 @@ class FolderReviewTests(unittest.TestCase):
                 next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
             )
             values = list(sheet.iter_rows(min_row=7, values_only=True))
-            self.assertEqual(sum(row[headers.index("last")] for row in values), 1)
+            self.assertEqual(sum(row[headers.index("last")] for row in values), 3)
             self.assertEqual(
-                sum(row[headers.index("SHA-256")] is not None for row in values), 1
+                sum(
+                    row[headers.index("Группа содержимого")] is not None
+                    for row in values
+                ),
+                1,
             )
         finally:
             book.close()
@@ -193,7 +366,10 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual(len(markers), 2, rows)
             self.assertEqual({row.levels[-2] for row in markers}, {"empty", "other"})
             self.assertTrue(
-                all(row.sha256 is None and row.in_archive == "да" for row in markers)
+                all(
+                    row.content_hash is None and row.in_archive == "да"
+                    for row in markers
+                )
             )
             self.assertTrue(all(row.error is None for row in rows), rows)
 
@@ -221,7 +397,7 @@ class FolderReviewTests(unittest.TestCase):
                 node, directory, folder_review.WorkBudget(rows_claimed=1)
             )
         self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0].sha256, hashlib.sha256(payload).hexdigest())
+        self.assertEqual(rows[0].content_hash, blake3(payload).digest())
         self.assertTrue(rows[1].virtual_folder)
         self.assertEqual(rows[1].levels, ("mock.rar", "empty", "deep", "dummy.dummy"))
 
@@ -677,7 +853,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(rows[0].leaf_name, "large.txt")
         self.assertIsNotNone(rows[0].error)
         self.assertIn("BadZipFile", rows[0].error)
-        self.assertIsNone(rows[0].sha256)
+        self.assertIsNone(rows[0].content_hash)
         self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
 
     def test_bad_7z_crc_is_reported_after_all_bytes_are_captured(self) -> None:
@@ -702,7 +878,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(rows[0].content_type, "Text (UTF-8 / ASCII)")
         self.assertIsNotNone(rows[0].error)
         self.assertIn("CrcError", rows[0].error)
-        self.assertIsNone(rows[0].sha256)
+        self.assertIsNone(rows[0].content_hash)
         self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
 
     def test_encrypted_7z_preserves_known_member_names(self) -> None:
@@ -723,7 +899,7 @@ class FolderReviewTests(unittest.TestCase):
             {"first.txt", "second.txt"},
         )
         self.assertTrue(all(row.error for row in rows))
-        self.assertTrue(all(row.sha256 is None for row in rows))
+        self.assertTrue(all(row.content_hash is None for row in rows))
         self.assertTrue(all("PasswordRequired" in row.error for row in rows))
         self.assertTrue(
             all(
@@ -837,7 +1013,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].content_type, "RAR archive (empty)")
         self.assertEqual(
-            rows[0].sha256, hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            rows[0].content_hash, blake3(archive_path.read_bytes()).digest()
         )
         self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_VERIFIED)
         self.assertIsNone(rows[0].error)
