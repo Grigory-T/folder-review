@@ -46,33 +46,33 @@ OUTPUT_FILE = "folder-review.xlsx"
 # inventory keeps fields useful for an ordinary content/folder review.
 ADVANCED_METADATA_HEADERS = frozenset(
     {
-        "Хеш содержимого (BLAKE3)",
-        "Исходный суффикс",
-        "Тип ссылки",
-        "Цель ссылки",
-        "Права доступа",
-        "Только чтение",
-        "Исполняемый",
-        "Системный (Windows)",
-        "Архивный (Windows)",
-        "Временный (Windows)",
-        "Автономный (Windows)",
-        "Сжатый (Windows)",
-        "Зашифрованный (Windows)",
-        "Разреженный (Windows)",
-        "Не индексировать содержимое (Windows)",
-        "Атрибуты файла (Windows)",
-        "st_file_attributes",
-        "st_reparse_tag",
-        "st_mode",
-        "st_ino",
-        "st_dev",
-        "st_rdev",
-        "st_nlink",
-        "st_uid (User ID of the owner)",
-        "st_gid (Group ID of the owner)",
-        "st_blksize",
-        "st_blocks",
+        "Content hash (BLAKE3)",
+        "Raw suffix",
+        "Link type",
+        "Link target",
+        "Permissions",
+        "Read-only",
+        "Executable",
+        "System (Windows)",
+        "Archive attribute (Windows)",
+        "Temporary (Windows)",
+        "Offline (Windows)",
+        "Compressed (Windows)",
+        "Encrypted (Windows)",
+        "Sparse (Windows)",
+        "Content indexing disabled (Windows)",
+        "File attributes (Windows)",
+        "File attributes (st_file_attributes)",
+        "Reparse tag (st_reparse_tag)",
+        "Mode (st_mode)",
+        "File ID (st_ino)",
+        "Device ID (st_dev)",
+        "Device type (st_rdev)",
+        "Link count (st_nlink)",
+        "Owner ID (st_uid)",
+        "Group ID (st_gid)",
+        "Block size (st_blksize)",
+        "Allocated blocks (st_blocks)",
     }
 )
 
@@ -2735,67 +2735,72 @@ def write_workbook(
         )
 
     rows = [display_row(row) for row in rows]
-    content_groups = {}
+    content_counts = {}
     for row in rows:
         if row.content_hash is not None and not row.is_virtual:
             key = (row.size, row.content_hash)
-            if key not in content_groups:
-                content_groups[key] = len(content_groups) + 1
+            content_counts[key] = content_counts.get(key, 0) + 1
+    content_groups = {
+        key: index
+        for index, key in enumerate(
+            (key for key, count in content_counts.items() if count > 1), start=1
+        )
+    }
 
     max_level = max((len(row.levels) for row in rows), default=0)
-    level_headers = [f"Уровень {index}" for index in range(1, max_level + 1)]
+    level_headers = [f"Level {index}" for index in range(1, max_level + 1)]
     all_data_headers = level_headers + [
-        "Уровень листа",
-        "Полный путь к файлу",
-        "Имя файла",
-        "Расширение",
-        "Группа типов",
-        "Подгруппа типов",
-        "Исходный суффикс",
-        "Полное имя файла",
-        "Группа содержимого",
-        "Хеш содержимого (BLAKE3)",
-        "Тип элемента",
-        "Виртуальная строка",
-        "Состояние",
-        "Распознанная роль",
-        "Тип ссылки",
-        "Цель ссылки",
-        "Права доступа",
-        "Скрытый",
-        "Только чтение",
-        "Исполняемый",
-        "Системный (Windows)",
-        "Архивный (Windows)",
-        "Временный (Windows)",
-        "Автономный (Windows)",
-        "Сжатый (Windows)",
-        "Зашифрованный (Windows)",
-        "Разреженный (Windows)",
-        "Не индексировать содержимое (Windows)",
-        "Атрибуты файла (Windows)",
-        "st_file_attributes",
-        "st_reparse_tag",
-        "st_mode",
-        "st_ino",
-        "st_dev",
-        "st_rdev",
-        "st_nlink",
-        "st_uid (User ID of the owner)",
-        "st_gid (Group ID of the owner)",
-        "st_blksize",
-        "st_blocks",
-        "Размер файла в мб",
-        "Размер файла, байт",
-        "Время последнего обращения к файлу",
-        "Время последнего изменения файла",
-        "Время создания файла",
-        "Время изменения метаданных",
+        "Leaf depth",
+        "Full path",
+        "Name without extension",
+        "File name",
+        "Extension",
+        "Type group",
+        "Type subgroup",
+        "Raw suffix",
+        "File size (bytes)",
+        "File size (MiB)",
+        "Duplicate group",
+        "Content hash (BLAKE3)",
+        "Item type",
+        "Virtual row",
+        "Inspection state",
+        "Inside archive",
+        "Hidden",
+        "Created at",
+        "Modified at",
+        "Accessed at",
+        "Metadata changed at",
+        "Detected role",
+        "Detected content type",
         "BOM",
-        "Проверка целостности",
-        "Тип по содержимому",
-        "В архиве",
-        "Ошибка",
+        "Integrity status",
+        "Error",
+        "Link type",
+        "Link target",
+        "Permissions",
+        "Read-only",
+        "Executable",
+        "System (Windows)",
+        "Archive attribute (Windows)",
+        "Temporary (Windows)",
+        "Offline (Windows)",
+        "Compressed (Windows)",
+        "Encrypted (Windows)",
+        "Sparse (Windows)",
+        "Content indexing disabled (Windows)",
+        "File attributes (Windows)",
+        "File attributes (st_file_attributes)",
+        "Reparse tag (st_reparse_tag)",
+        "Mode (st_mode)",
+        "File ID (st_ino)",
+        "Device ID (st_dev)",
+        "Device type (st_rdev)",
+        "Link count (st_nlink)",
+        "Owner ID (st_uid)",
+        "Group ID (st_gid)",
+        "Block size (st_blksize)",
+        "Allocated blocks (st_blocks)",
     ]
     visible_columns = [
         index
@@ -2803,7 +2808,7 @@ def write_workbook(
         if full_metadata or header not in ADVANCED_METADATA_HEADERS
     ]
     data_headers = [all_data_headers[index] for index in visible_columns]
-    headers = ["№пп", *data_headers, "last"]
+    headers = ["Row number", *data_headers, "last"]
 
     with _report_workbook(output_path) as wb:
         wb.set_calc_mode("auto", 191029)
@@ -2849,34 +2854,34 @@ def write_workbook(
         last_table_column = first_table_column + len(headers) - 1
         sheet.set_column(0, 0, 5.81640625 - 5 / 7)
         wide_columns = {
-            "Группа содержимого": 16,
-            "Хеш содержимого (BLAKE3)": 67,
-            "Группа типов": 24,
-            "Подгруппа типов": 30,
-            "Виртуальная строка": 16,
-            "Состояние": 24,
-            "Исходный суффикс": 24,
-            "Полный путь к файлу": 42,
-            "Имя файла": 20,
-            "Полное имя файла": 24,
-            "Тип элемента": 24,
-            "Распознанная роль": 38,
-            "Тип ссылки": 20,
-            "Цель ссылки": 32,
-            "Права доступа": 16,
-            "Атрибуты файла (Windows)": 32,
-            "st_ino": 22,
-            "st_dev": 22,
-            "st_rdev": 16,
-            "st_uid (User ID of the owner)": 17,
-            "st_gid (Group ID of the owner)": 17,
-            "Время последнего обращения к файлу": 20,
-            "Время последнего изменения файла": 20,
-            "Время создания файла": 20,
-            "Время изменения метаданных": 20,
-            "Проверка целостности": 20,
-            "Тип по содержимому": 24,
-            "Ошибка": 20,
+            "Duplicate group": 16,
+            "Content hash (BLAKE3)": 67,
+            "Type group": 24,
+            "Type subgroup": 30,
+            "Virtual row": 16,
+            "Inspection state": 24,
+            "Raw suffix": 24,
+            "Full path": 42,
+            "Name without extension": 20,
+            "File name": 24,
+            "Item type": 24,
+            "Detected role": 38,
+            "Link type": 20,
+            "Link target": 32,
+            "Permissions": 16,
+            "File attributes (Windows)": 32,
+            "File ID (st_ino)": 22,
+            "Device ID (st_dev)": 22,
+            "Device type (st_rdev)": 16,
+            "Owner ID (st_uid)": 17,
+            "Group ID (st_gid)": 17,
+            "Accessed at": 20,
+            "Modified at": 20,
+            "Created at": 20,
+            "Metadata changed at": 20,
+            "Integrity status": 20,
+            "Detected content type": 24,
+            "Error": 20,
         }
         for offset, column in enumerate(
             range(first_table_column, last_table_column + 1)
@@ -2889,7 +2894,7 @@ def write_workbook(
 
         ws.append([None])
         root_name = os.path.basename(root_folder.rstrip("\\/")) or root_folder
-        title = f"Таблица: Обзор файлов папки {root_name}"
+        title = f"Folder file inventory: {root_name}"
         ws.append(
             [None, styled_cell(ws, excel_text(title), font=title_font, force_text=True)]
         )
@@ -2925,51 +2930,51 @@ def write_workbook(
         ws.append(header_row)
 
         centered_headers = {
-            "Группа содержимого",
-            "Виртуальная строка",
-            "Уровень листа",
-            "Расширение",
-            "Тип элемента",
-            "Тип ссылки",
-            "Права доступа",
-            "Скрытый",
-            "Только чтение",
-            "Исполняемый",
-            "Системный (Windows)",
-            "Архивный (Windows)",
-            "Временный (Windows)",
-            "Автономный (Windows)",
-            "Сжатый (Windows)",
-            "Зашифрованный (Windows)",
-            "Разреженный (Windows)",
-            "Не индексировать содержимое (Windows)",
-            "st_file_attributes",
-            "st_reparse_tag",
-            "st_mode",
-            "st_ino",
-            "st_dev",
-            "st_rdev",
-            "st_nlink",
-            "st_uid (User ID of the owner)",
-            "st_gid (Group ID of the owner)",
-            "st_blksize",
-            "st_blocks",
+            "Duplicate group",
+            "Virtual row",
+            "Leaf depth",
+            "Extension",
+            "Item type",
+            "Link type",
+            "Permissions",
+            "Hidden",
+            "Read-only",
+            "Executable",
+            "System (Windows)",
+            "Archive attribute (Windows)",
+            "Temporary (Windows)",
+            "Offline (Windows)",
+            "Compressed (Windows)",
+            "Encrypted (Windows)",
+            "Sparse (Windows)",
+            "Content indexing disabled (Windows)",
+            "File attributes (st_file_attributes)",
+            "Reparse tag (st_reparse_tag)",
+            "Mode (st_mode)",
+            "File ID (st_ino)",
+            "Device ID (st_dev)",
+            "Device type (st_rdev)",
+            "Link count (st_nlink)",
+            "Owner ID (st_uid)",
+            "Group ID (st_gid)",
+            "Block size (st_blksize)",
+            "Allocated blocks (st_blocks)",
             "BOM",
-            "Проверка целостности",
-            "В архиве",
+            "Integrity status",
+            "Inside archive",
         }
         number_formats = {
-            "st_ino": "@",
-            "st_dev": "@",
-            "st_rdev": "@",
-            "st_uid (User ID of the owner)": "@",
-            "st_gid (Group ID of the owner)": "@",
-            "Размер файла в мб": "#,##0.000",
-            "Размер файла, байт": "#,##0",
-            "Время последнего обращения к файлу": "yyyy-mm-dd hh:mm:ss",
-            "Время последнего изменения файла": "yyyy-mm-dd hh:mm:ss",
-            "Время создания файла": "yyyy-mm-dd hh:mm:ss",
-            "Время изменения метаданных": "yyyy-mm-dd hh:mm:ss",
+            "File ID (st_ino)": "@",
+            "Device ID (st_dev)": "@",
+            "Device type (st_rdev)": "@",
+            "Owner ID (st_uid)": "@",
+            "Group ID (st_gid)": "@",
+            "File size (MiB)": "#,##0.000",
+            "File size (bytes)": "#,##0",
+            "Accessed at": "yyyy-mm-dd hh:mm:ss",
+            "Modified at": "yyyy-mm-dd hh:mm:ss",
+            "Created at": "yyyy-mm-dd hh:mm:ss",
+            "Metadata changed at": "yyyy-mm-dd hh:mm:ss",
         }
         for row_number, row in enumerate(rows, start=1):
             properties = row.properties
@@ -2988,65 +2993,85 @@ def write_workbook(
             stem_name = (
                 ntpath.splitext(row.leaf_name)[0] if row.extension else row.leaf_name
             )
-            values = [
-                *(
-                    row.levels[index] if index < len(row.levels) else None
-                    for index in range(max_level)
-                ),
-                len(row.levels),
-                row.full_path,
-                stem_name,
-                row.extension,
-                family,
-                subtype,
-                raw_extension_of(row.leaf_name) if not row.is_virtual else None,
-                row.leaf_name,
-                content_groups.get((row.size, row.content_hash))
+            values = {
+                **{
+                    header: row.levels[index] if index < len(row.levels) else None
+                    for index, header in enumerate(level_headers)
+                },
+                "Leaf depth": len(row.levels),
+                "Full path": row.full_path,
+                "Name without extension": stem_name,
+                "Extension": row.extension,
+                "Type group": family,
+                "Type subgroup": subtype,
+                "Raw suffix": raw_extension_of(row.leaf_name)
                 if not row.is_virtual
                 else None,
-                row.content_hash.hex() if row.content_hash is not None else None,
-                row.item_type,
-                "да" if row.is_virtual else "нет",
-                state,
-                row.recognized_role,
-                row.link_type,
-                row.link_target,
-                properties.permissions if properties else None,
-                properties.hidden if properties else None,
-                properties.read_only if properties else None,
-                properties.executable if properties else None,
-                properties.system if properties else None,
-                properties.archive_attribute if properties else None,
-                properties.temporary if properties else None,
-                properties.offline if properties else None,
-                properties.compressed if properties else None,
-                properties.encrypted if properties else None,
-                properties.sparse if properties else None,
-                properties.not_content_indexed if properties else None,
-                properties.file_attributes if properties else None,
-                properties.file_attributes_value if properties else None,
-                properties.reparse_tag if properties else None,
-                properties.mode if properties else None,
-                properties.inode if properties else None,
-                properties.device if properties else None,
-                properties.device_type if properties else None,
-                properties.links if properties else None,
-                properties.user_id if properties else None,
-                properties.group_id if properties else None,
-                properties.block_size if properties else None,
-                properties.blocks if properties else None,
-                row.size / (1024 * 1024),
-                row.size,
-                properties.accessed_at if properties else None,
-                properties.modified_at if properties else None,
-                properties.created_at if properties else None,
-                properties.metadata_changed_at if properties else None,
-                row.bom,
-                row.integrity_status,
-                row.content_type,
-                row.in_archive,
-                row.error,
-            ]
+                "File name": row.leaf_name,
+                "Duplicate group": content_groups.get((row.size, row.content_hash))
+                if not row.is_virtual
+                else None,
+                "Content hash (BLAKE3)": row.content_hash.hex()
+                if row.content_hash is not None
+                else None,
+                "Item type": row.item_type,
+                "Virtual row": "да" if row.is_virtual else "нет",
+                "Inspection state": state,
+                "Detected role": row.recognized_role,
+                "Link type": row.link_type,
+                "Link target": row.link_target,
+                "Permissions": properties.permissions if properties else None,
+                "Hidden": properties.hidden if properties else None,
+                "Read-only": properties.read_only if properties else None,
+                "Executable": properties.executable if properties else None,
+                "System (Windows)": properties.system if properties else None,
+                "Archive attribute (Windows)": properties.archive_attribute
+                if properties
+                else None,
+                "Temporary (Windows)": properties.temporary if properties else None,
+                "Offline (Windows)": properties.offline if properties else None,
+                "Compressed (Windows)": properties.compressed if properties else None,
+                "Encrypted (Windows)": properties.encrypted if properties else None,
+                "Sparse (Windows)": properties.sparse if properties else None,
+                "Content indexing disabled (Windows)": properties.not_content_indexed
+                if properties
+                else None,
+                "File attributes (Windows)": properties.file_attributes
+                if properties
+                else None,
+                "File attributes (st_file_attributes)": properties.file_attributes_value
+                if properties
+                else None,
+                "Reparse tag (st_reparse_tag)": properties.reparse_tag
+                if properties
+                else None,
+                "Mode (st_mode)": properties.mode if properties else None,
+                "File ID (st_ino)": properties.inode if properties else None,
+                "Device ID (st_dev)": properties.device if properties else None,
+                "Device type (st_rdev)": properties.device_type if properties else None,
+                "Link count (st_nlink)": properties.links if properties else None,
+                "Owner ID (st_uid)": properties.user_id if properties else None,
+                "Group ID (st_gid)": properties.group_id if properties else None,
+                "Block size (st_blksize)": properties.block_size
+                if properties
+                else None,
+                "Allocated blocks (st_blocks)": properties.blocks
+                if properties
+                else None,
+                "File size (MiB)": row.size / (1024 * 1024),
+                "File size (bytes)": row.size,
+                "Accessed at": properties.accessed_at if properties else None,
+                "Modified at": properties.modified_at if properties else None,
+                "Created at": properties.created_at if properties else None,
+                "Metadata changed at": properties.metadata_changed_at
+                if properties
+                else None,
+                "BOM": row.bom,
+                "Integrity status": row.integrity_status,
+                "Detected content type": row.content_type,
+                "Inside archive": row.in_archive,
+                "Error": row.error,
+            }
 
             output_row = [None]
             output_row.append(
@@ -3060,7 +3085,7 @@ def write_workbook(
             )
 
             for header, value in zip(
-                data_headers, (values[index] for index in visible_columns)
+                data_headers, (values[header] for header in data_headers)
             ):
                 is_text = isinstance(value, str)
                 if is_text:
@@ -3131,7 +3156,7 @@ def write_workbook(
         status_header = [
             styled_cell(
                 status_ws,
-                "Параметр",
+                "Parameter",
                 font=header_font,
                 border=border,
                 fill=blue_fill,
@@ -3139,7 +3164,7 @@ def write_workbook(
             ),
             styled_cell(
                 status_ws,
-                "Значение",
+                "Value",
                 font=header_font,
                 border=border,
                 fill=blue_fill,
@@ -3149,47 +3174,51 @@ def write_workbook(
         status_ws.append(status_header)
 
         max_expanded = (
-            "без ограничения"
+            "Unlimited"
             if report.max_expanded_bytes is None
             else report.max_expanded_bytes
         )
         max_seconds = (
-            "без ограничения"
+            "Unlimited"
             if report.max_archive_seconds is None
             else report.max_archive_seconds
         )
         summary_rows = [
-            ("Статус", report.status),
-            ("Корневая папка", root_folder),
-            ("Начало", report.started_at),
-            ("Завершение", report.completed_at),
-            ("Потоки", report.workers),
-            ("Физические элементы", report.physical_items),
-            ("Логические строки", report.logical_rows),
-            ("Папки", report.stats.folders),
-            ("Пропущенные папки", report.stats.skipped_folders),
-            ("Пропущенные элементы", report.stats.skipped_entries),
-            ("Строки с ошибками", report.row_errors),
-            ("Распаковано, байт", report.expanded_bytes),
-            ("Лимит распаковки, байт", max_expanded),
-            ("Лимит времени архивов, сек.", max_seconds),
-            ("Лимит логических строк", report.max_rows),
+            ("Status", report.status),
+            ("Root folder", root_folder),
+            ("Started at", report.started_at),
+            ("Completed at", report.completed_at),
+            ("Workers", report.workers),
+            ("Physical items", report.physical_items),
+            ("Report rows", report.logical_rows),
+            ("Folders visited", report.stats.folders),
+            ("Skipped folders", report.stats.skipped_folders),
+            ("Skipped entries", report.stats.skipped_entries),
+            ("Rows with errors", report.row_errors),
+            ("Expanded data (bytes)", report.expanded_bytes),
+            ("Expanded data limit (bytes)", max_expanded),
+            ("Archive time limit (seconds)", max_seconds),
+            ("Report row limit", report.max_rows),
             (
-                "Семантика",
+                "Inventory notes",
                 (
-                    "Логический файловый инвентарь: обычные папки задают иерархию; "
-                    "last всегда 1. Фильтр «Виртуальная строка» отделяет маркеры папок "
-                    "и ошибок; исходное место остается в полном пути."
+                    "Logical file inventory: folders define the hierarchy; last is always 1. "
+                    "Filter Virtual row and Inspection state to select folder/error markers. "
+                    "Full path retains the original location. Sizes use bytes and MiB (1 MiB = 1,048,576 bytes); timestamps use local time."
                 ),
             ),
-            ("Виртуальные строки", sum(row.is_virtual for row in rows)),
+            ("Virtual rows", sum(row.is_virtual for row in rows)),
             (
-                "Хеш",
-                "BLAKE3-256 полного содержимого. Равное содержимое получает общий числовой ID от 1; ID действует только внутри отчета.",
+                "Content fingerprints",
+                "BLAKE3-256 of complete contents. Only repeated contents receive a Duplicate group ID, consecutive from 1 within this report. Unique, virtual and unhashed rows have blank IDs.",
             ),
-            ("Строк с отпечатком", sum(row.content_hash is not None for row in rows)),
-            ("Невиртуальные строки", sum(not row.is_virtual for row in rows)),
-            ("Групп содержимого", len(content_groups)),
+            (
+                "Rows with fingerprints",
+                sum(row.content_hash is not None for row in rows),
+            ),
+            ("Nonvirtual rows", sum(not row.is_virtual for row in rows)),
+            ("Duplicate groups", len(content_groups)),
+            ("Duplicate file rows", sum(content_counts[key] for key in content_groups)),
         ]
         for label, value in summary_rows:
             if isinstance(value, datetime):
@@ -3203,11 +3232,11 @@ def write_workbook(
             value_fill = None
             value_font = normal_font
             value_alignment = None
-            if label == "Статус":
+            if label == "Status":
                 value_fill = green_fill if value == "COMPLETE" else amber_fill
                 value_font = title_font
                 value_alignment = centered
-            elif label in ("Семантика", "Хеш"):
+            elif label in ("Inventory notes", "Content fingerprints"):
                 value_alignment = {"valign": "top", "text_wrap": True}
             status_ws.append(
                 [
@@ -3231,7 +3260,7 @@ def write_workbook(
             )
 
         status_ws.append([None])
-        diagnostic_headers = ("Этап", "Путь", "Ошибка")
+        diagnostic_headers = ("Stage", "Path", "Error")
         status_ws.append(
             [
                 styled_cell(
@@ -3312,7 +3341,7 @@ def write_workbook(
                 [
                     styled_cell(
                         status_ws,
-                        "Нет ошибок",
+                        "No errors",
                         font=normal_font,
                         border=border,
                         force_text=True,

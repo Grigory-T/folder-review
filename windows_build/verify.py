@@ -170,14 +170,12 @@ def normalized_workbook(path):
                 )
             )
         )
-        access_column = get_column_letter(
-            headers.index("Время последнего обращения к файлу") + 1
-        )
+        access_column = get_column_letter(headers.index("Accessed at") + 1)
         status = list(workbook["scan_status"].iter_rows(values_only=True))
         volatile_status_rows = {
             index
             for index, row in enumerate(status, 1)
-            if row and row[0] in ("Начало", "Завершение")
+            if row and row[0] in ("Started at", "Completed at")
         }
         status_values = {row[0]: row[1] for row in status[1:17]}
         rows = sum(1 for _ in workbook["folder_review"].iter_rows(min_row=7))
@@ -613,15 +611,15 @@ def main():
                                 dict(zip(headings, row))
                                 for row in sheet.iter_rows(min_row=7, values_only=True)
                             ]
-                            assert {row["Полное имя файла"] for row in records} == {
+                            assert {row["File name"] for row in records} == {
                                 "dummy.dummy",
                                 "password.password",
                                 "corrupt.corrupt",
                             }
                             assert all(
                                 row["last"] == 1
-                                and row["Виртуальная строка"] == "да"
-                                and row["Группа содержимого"] is None
+                                and row["Virtual row"] == "да"
+                                and row["Duplicate group"] is None
                                 for row in records
                             )
                         finally:
@@ -636,45 +634,42 @@ def main():
                             values = list(sheet.iter_rows(min_row=7, values_only=True))
                             records = [dict(zip(headings, row)) for row in values]
                             markers = [
-                                row
-                                for row in records
-                                if row["Виртуальная строка"] == "да"
+                                row for row in records if row["Virtual row"] == "да"
                             ]
                             assert len(markers) == 2
                             assert all(
-                                row["Полное имя файла"] == "dummy.dummy"
-                                and row["Хеш содержимого (BLAKE3)"] is None
-                                and not row["Расширение"]
+                                row["File name"] == "dummy.dummy"
+                                and row["Content hash (BLAKE3)"] is None
+                                and not row["Extension"]
                                 for row in markers
                             )
                             assert all(row["last"] == 1 for row in records)
                             groups = [
-                                row["Группа содержимого"]
+                                row["Duplicate group"]
                                 for row in records
-                                if row["Виртуальная строка"] == "нет"
+                                if row["Duplicate group"] is not None
                             ]
-                            assert sorted(set(groups)) == [1, 2] and len(groups) == 5
+                            assert sorted(set(groups)) == [1] and len(groups) == 4
                             assert (
                                 max(groups.count(group) for group in set(groups)) == 4
                             )
                             for row in records:
-                                leaf = row["Полное имя файла"]
+                                leaf = row["File name"]
                                 if leaf in hash_names | {"inside.txt"}:
                                     assert (
-                                        row["Хеш содержимого (BLAKE3)"]
+                                        row["Content hash (BLAKE3)"]
                                         == blake3(hash_payload).hexdigest()
                                     )
                                 elif leaf == "empty-file":
                                     assert (
-                                        row["Хеш содержимого (BLAKE3)"]
+                                        row["Content hash (BLAKE3)"]
                                         == blake3(b"").hexdigest()
                                     )
                                 if leaf == "1.2.3-cp313-cp313-win_amd64":
-                                    assert not row["Расширение"]
-                                    assert row["Имя файла"] == leaf
+                                    assert not row["Extension"]
+                                    assert row["Name without extension"] == leaf
                                     assert (
-                                        row["Исходный суффикс"]
-                                        == "3-cp313-cp313-win_amd64"
+                                        row["Raw suffix"] == "3-cp313-cp313-win_amd64"
                                     )
                         finally:
                             workbook.close()
@@ -692,8 +687,8 @@ def main():
                                     min_row=6, max_row=6, values_only=True
                                 )
                             )
-                            path_column = headers.index("Полный путь к файлу")
-                            filename_column = headers.index("Полное имя файла")
+                            path_column = headers.index("Full path")
+                            filename_column = headers.index("File name")
                             for row in workbook["folder_review"].iter_rows(
                                 min_row=7, values_only=True
                             ):
@@ -704,7 +699,7 @@ def main():
                                 assert "should-not-appear" not in row[path_column], row
                         finally:
                             workbook.close()
-                    assert status["Статус"] == (
+                    assert status["Status"] == (
                         "COMPLETE" if expected == 0 else "PARTIAL"
                     )
                     if baseline is None:

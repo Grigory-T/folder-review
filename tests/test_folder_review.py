@@ -97,7 +97,7 @@ class FolderReviewTests(unittest.TestCase):
                 for row in sheet.iter_rows(min_row=7, values_only=True)
             ]
             self.assertEqual(
-                [row["Полное имя файла"] for row in records],
+                [row["File name"] for row in records],
                 [
                     "dummy.dummy",
                     "deny.deny",
@@ -108,22 +108,19 @@ class FolderReviewTests(unittest.TestCase):
                 ],
             )
             self.assertTrue(
-                all(
-                    row["last"] == 1 and row["Виртуальная строка"] == "да"
-                    for row in records
-                )
+                all(row["last"] == 1 and row["Virtual row"] == "да" for row in records)
             )
-            self.assertTrue(all(row["Группа содержимого"] is None for row in records))
+            self.assertTrue(all(row["Duplicate group"] is None for row in records))
             self.assertTrue(
-                all(row["Группа типов"] == "Служебные строки" for row in records)
+                all(row["Type group"] == "Служебные строки" for row in records)
             )
             self.assertEqual(
-                [row["Полный путь к файлу"] for row in records],
+                [row["Full path"] for row in records],
                 [row.full_path for row in rows],
             )
-            self.assertEqual(records[2]["Уровень 1"], "encrypted.7z")
-            self.assertEqual(records[2]["Уровень 2"], "password.password")
-            self.assertNotIn("Хеш содержимого (BLAKE3)", headings)
+            self.assertEqual(records[2]["Level 1"], "encrypted.7z")
+            self.assertEqual(records[2]["Level 2"], "password.password")
+            self.assertNotIn("Content hash (BLAKE3)", headings)
         finally:
             book.close()
         self.assertEqual(
@@ -133,7 +130,7 @@ class FolderReviewTests(unittest.TestCase):
     def test_content_group_ids_are_consecutive_and_shared_only_by_equal_content(
         self,
     ) -> None:
-        payloads = [b"alpha", b"beta", b"alpha", b"", None]
+        payloads = [b"alpha", b"beta", b"alpha", b"", None, b"beta", b"unique"]
         rows = [
             replace(
                 folder_review.make_row(
@@ -142,7 +139,16 @@ class FolderReviewTests(unittest.TestCase):
                 content_hash=blake3(data).digest() if data is not None else None,
             )
             for name, data in zip(
-                ("one.txt", "two.txt", "deny.deny", "empty", "unhashed"), payloads
+                (
+                    "one.txt",
+                    "two.txt",
+                    "deny.deny",
+                    "empty",
+                    "unhashed",
+                    "three.txt",
+                    "unique.txt",
+                ),
+                payloads,
             )
         ]
         output = self.root / "classes.xlsx"
@@ -156,21 +162,19 @@ class FolderReviewTests(unittest.TestCase):
                 for row in sheet.iter_rows(min_row=7, values_only=True)
             ]
             self.assertEqual(
-                [row["Группа содержимого"] for row in records], [1, 2, 1, 3, None]
+                [row["Duplicate group"] for row in records],
+                [1, 2, 1, None, None, 2, None],
             )
             self.assertTrue(
-                all(
-                    row["last"] == 1 and row["Виртуальная строка"] == "нет"
-                    for row in records
-                )
+                all(row["last"] == 1 and row["Virtual row"] == "нет" for row in records)
             )
             self.assertEqual(
-                records[2]["Полное имя файла"],
+                records[2]["File name"],
                 "deny.deny",
                 "A real marker-like name must remain an ordinary file",
             )
             self.assertEqual(
-                records[3]["Хеш содержимого (BLAKE3)"],
+                records[3]["Content hash (BLAKE3)"],
                 "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
             )
             status = {
@@ -178,9 +182,59 @@ class FolderReviewTests(unittest.TestCase):
                 for row in book["scan_status"].iter_rows(values_only=True)
                 if row[0] is not None
             }
-            self.assertEqual(status["Групп содержимого"], 3)
+            self.assertEqual(status["Duplicate groups"], 2)
+            self.assertEqual(status["Duplicate file rows"], 4)
         finally:
             book.close()
+
+    def test_english_schema_order_units_and_status(self) -> None:
+        source = self.root / "пример.txt"
+        source.write_bytes(b"x" * 1048576)
+        rows = folder_review.inspect_files(
+            folder_review.scan_tree(str(self.root), set(), 1)[0], 1
+        )
+        for full in (False, True):
+            output = self.root / ("full.xlsx" if full else "compact.xlsx")
+            folder_review.write_workbook(rows, output, "пример", full_metadata=full)
+            book = load_workbook(output, read_only=True)
+            try:
+                sheet = book["folder_review"]
+                headers = list(
+                    next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+                )[1:]
+                self.assertTrue(all(header.isascii() for header in headers))
+                self.assertEqual(len(headers), len(set(headers)))
+                self.assertEqual(
+                    headers.index("File name"),
+                    headers.index("Name without extension") + 1,
+                )
+                self.assertEqual(
+                    headers.index("File size (MiB)"),
+                    headers.index("File size (bytes)") + 1,
+                )
+                record = dict(
+                    zip(
+                        headers,
+                        next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))[
+                            1:
+                        ],
+                    )
+                )
+                self.assertEqual(record["File name"], "пример.txt")
+                self.assertEqual(record["Name without extension"], "пример")
+                self.assertEqual(record["File size (bytes)"], 1048576)
+                self.assertEqual(record["File size (MiB)"], 1)
+                self.assertIsNone(record["Duplicate group"])
+                self.assertEqual(record["last"], 1)
+                status = list(book["scan_status"].iter_rows(values_only=True))
+                self.assertEqual(status[0][:2], ("Parameter", "Value"))
+                for row in status:
+                    self.assertTrue(row[0] is None or row[0].isascii())
+                    if row[0] != "Root folder" and isinstance(row[1], str):
+                        self.assertTrue(row[1].isascii())
+                self.assertIn(("Stage", "Path", "Error"), status)
+            finally:
+                book.close()
 
     def test_marker_reason_does_not_confuse_names_or_network_errors(self) -> None:
         for error, expected in (
@@ -282,7 +336,13 @@ class FolderReviewTests(unittest.TestCase):
         after = SimpleNamespace(
             **{
                 key: getattr(before, key)
-                for key in ("st_size", "st_mtime_ns", "st_ctime_ns", "st_ino", "st_dev")
+                for key in (
+                    "st_size",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                    "st_ino",
+                    "st_dev",
+                )
             }
         )
         after.st_mtime_ns += 1
@@ -326,10 +386,9 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual(sum(row[headers.index("last")] for row in values), 3)
             self.assertEqual(
                 sum(
-                    row[headers.index("Группа содержимого")] is not None
-                    for row in values
+                    row[headers.index("Duplicate group")] is not None for row in values
                 ),
-                1,
+                0,
             )
         finally:
             book.close()
@@ -452,9 +511,9 @@ class FolderReviewTests(unittest.TestCase):
                 next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
             )
             values = next(sheet.iter_rows(min_row=7, values_only=True))
-            self.assertEqual(values[headers.index("Имя файла")], "1.2.3")
-            self.assertIn(values[headers.index("Расширение")], (None, ""))
-            self.assertEqual(values[headers.index("Исходный суффикс")], "3")
+            self.assertEqual(values[headers.index("Name without extension")], "1.2.3")
+            self.assertIn(values[headers.index("Extension")], (None, ""))
+            self.assertEqual(values[headers.index("Raw suffix")], "3")
         finally:
             book.close()
 
@@ -495,17 +554,17 @@ class FolderReviewTests(unittest.TestCase):
         try:
             ws = book["folder_review"]
             headers = list(next(ws.iter_rows(min_row=6, max_row=6, values_only=True)))
-            name_column = headers.index("Полное имя файла") + 1
+            name_column = headers.index("File name") + 1
             for row in ws.iter_rows(min_row=7):
                 self.assertEqual(row[name_column - 1].data_type, "s")
-                self.assertEqual(row[headers.index("st_ino")].value, properties.inode)
                 self.assertEqual(
-                    row[headers.index("Время последнего изменения файла")].value,
+                    row[headers.index("File ID (st_ino)")].value, properties.inode
+                )
+                self.assertEqual(
+                    row[headers.index("Modified at")].value,
                     properties.modified_at,
                 )
-                self.assertEqual(
-                    row[headers.index("Размер файла, байт")].data_type, "n"
-                )
+                self.assertEqual(row[headers.index("File size (bytes)")].data_type, "n")
         finally:
             book.close()
         ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
@@ -979,8 +1038,8 @@ class FolderReviewTests(unittest.TestCase):
         workbook = load_workbook(output, read_only=True, data_only=True)
         try:
             status_values = list(workbook["scan_status"].iter_rows(values_only=True))
-            self.assertIn(("Статус", "PARTIAL"), [row[:2] for row in status_values])
-            self.assertIn(("Строки с ошибками", 1), [row[:2] for row in status_values])
+            self.assertIn(("Status", "PARTIAL"), [row[:2] for row in status_values])
+            self.assertIn(("Rows with errors", 1), [row[:2] for row in status_values])
         finally:
             workbook.close()
 
@@ -1121,59 +1180,59 @@ class FolderReviewTests(unittest.TestCase):
             values = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
             columns = {header: index for index, header in enumerate(headers) if header}
             requested_headers = {
-                "Полный путь к файлу",
-                "Имя файла",
-                "Расширение",
-                "Полное имя файла",
-                "Тип элемента",
-                "Распознанная роль",
-                "Тип ссылки",
-                "Цель ссылки",
-                "Права доступа",
-                "Скрытый",
-                "Только чтение",
-                "Исполняемый",
-                "Системный (Windows)",
-                "Архивный (Windows)",
-                "Временный (Windows)",
-                "Автономный (Windows)",
-                "Сжатый (Windows)",
-                "Зашифрованный (Windows)",
-                "Разреженный (Windows)",
-                "Не индексировать содержимое (Windows)",
-                "Атрибуты файла (Windows)",
-                "st_file_attributes",
-                "st_reparse_tag",
-                "st_mode",
-                "st_ino",
-                "st_dev",
-                "st_rdev",
-                "st_nlink",
-                "st_uid (User ID of the owner)",
-                "st_gid (Group ID of the owner)",
-                "st_blksize",
-                "st_blocks",
-                "Размер файла в мб",
-                "Время последнего обращения к файлу",
-                "Время последнего изменения файла",
-                "Время создания файла",
-                "Время изменения метаданных",
+                "Full path",
+                "Name without extension",
+                "Extension",
+                "File name",
+                "Item type",
+                "Detected role",
+                "Link type",
+                "Link target",
+                "Permissions",
+                "Hidden",
+                "Read-only",
+                "Executable",
+                "System (Windows)",
+                "Archive attribute (Windows)",
+                "Temporary (Windows)",
+                "Offline (Windows)",
+                "Compressed (Windows)",
+                "Encrypted (Windows)",
+                "Sparse (Windows)",
+                "Content indexing disabled (Windows)",
+                "File attributes (Windows)",
+                "File attributes (st_file_attributes)",
+                "Reparse tag (st_reparse_tag)",
+                "Mode (st_mode)",
+                "File ID (st_ino)",
+                "Device ID (st_dev)",
+                "Device type (st_rdev)",
+                "Link count (st_nlink)",
+                "Owner ID (st_uid)",
+                "Group ID (st_gid)",
+                "Block size (st_blksize)",
+                "Allocated blocks (st_blocks)",
+                "File size (MiB)",
+                "Accessed at",
+                "Modified at",
+                "Created at",
+                "Metadata changed at",
                 "BOM",
-                "Проверка целостности",
+                "Integrity status",
             }
             self.assertTrue(requested_headers.issubset(columns))
-            self.assertEqual(values[columns["Имя файла"]], "leaf")
-            self.assertEqual(values[columns["Полное имя файла"]], "leaf.pdf")
-            self.assertEqual(values[columns["Тип по содержимому"]], "PDF")
-            self.assertEqual(values[columns["В архиве"]], "нет")
+            self.assertEqual(values[columns["Name without extension"]], "leaf")
+            self.assertEqual(values[columns["File name"]], "leaf.pdf")
+            self.assertEqual(values[columns["Detected content type"]], "PDF")
+            self.assertEqual(values[columns["Inside archive"]], "нет")
             self.assertEqual(values[columns["BOM"]], "нет")
-            self.assertIsNone(values[columns["Проверка целостности"]])
-            self.assertEqual(values[columns["Тип элемента"]], "Файл")
-            self.assertEqual(values[columns["Скрытый"]], "нет")
-            self.assertEqual(values[columns["Права доступа"]], properties.permissions)
-            self.assertEqual(values[columns["st_mode"]], properties.mode)
-            self.assertEqual(values[columns["st_ino"]], properties.inode)
-            self.assertIsNotNone(values[columns["Время последнего изменения файла"]])
+            self.assertIsNone(values[columns["Integrity status"]])
+            self.assertEqual(values[columns["Item type"]], "Файл")
+            self.assertEqual(values[columns["Hidden"]], "нет")
+            self.assertEqual(values[columns["Permissions"]], properties.permissions)
+            self.assertEqual(values[columns["Mode (st_mode)"]], properties.mode)
+            self.assertEqual(values[columns["File ID (st_ino)"]], properties.inode)
+            self.assertIsNotNone(values[columns["Modified at"]])
             status_sheet = workbook["scan_status"]
             status_values = {
                 row[0]: row[1]
@@ -1183,8 +1242,8 @@ class FolderReviewTests(unittest.TestCase):
                     values_only=True,
                 )
             }
-            self.assertEqual(status_values["Статус"], "COMPLETE")
-            self.assertEqual(status_values["Логические строки"], 1)
+            self.assertEqual(status_values["Status"], "COMPLETE")
+            self.assertEqual(status_values["Report rows"], 1)
         finally:
             workbook.close()
 
@@ -1477,7 +1536,7 @@ class FolderReviewTests(unittest.TestCase):
         try:
             status_sheet = workbook["scan_status"]
             values = list(status_sheet.iter_rows(values_only=True))
-            self.assertIn(("Статус", "PARTIAL"), [row[:2] for row in values])
+            self.assertIn(("Status", "PARTIAL"), [row[:2] for row in values])
             self.assertTrue(
                 any(
                     len(row) >= 3
@@ -1528,11 +1587,9 @@ class FolderReviewTests(unittest.TestCase):
                 2,
             )
             status_values = list(workbook["scan_status"].iter_rows(values_only=True))
-            self.assertIn(("Статус", "PARTIAL"), [row[:2] for row in status_values])
-            self.assertIn(
-                ("Физические элементы", 3), [row[:2] for row in status_values]
-            )
-            self.assertIn(("Логические строки", 2), [row[:2] for row in status_values])
+            self.assertIn(("Status", "PARTIAL"), [row[:2] for row in status_values])
+            self.assertIn(("Physical items", 3), [row[:2] for row in status_values])
+            self.assertIn(("Report rows", 2), [row[:2] for row in status_values])
             self.assertTrue(
                 any(
                     len(row) >= 3
@@ -1596,7 +1653,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(
             set(full) - set(compact), folder_review.ADVANCED_METADATA_HEADERS
         )
-        self.assertIn("Скрытый", compact)
+        self.assertIn("Hidden", compact)
         self.assertEqual(compact, {key: full[key] for key in compact})
 
     def test_runtime_denies_network_and_source_mutations(self) -> None:
