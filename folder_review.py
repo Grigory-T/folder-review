@@ -1024,10 +1024,6 @@ def file_type_groups(row: ResultRow) -> tuple[str, str]:
         return "Данные и настройки", "Настройки"
     if name in {".lock", ".pid"}:
         return "Системные и служебные", "Файлы блокировки и состояния"
-    if re.match(r"^(?:license|licence|copying|notice)(?:[._-]|$)", name):
-        return "Документы", "Лицензии и уведомления"
-    if re.match(r"^readme(?:[._-]|$)", name):
-        return "Документы", "Обычный текст и разметка"
     if name.endswith(
         (
             ".js.map",
@@ -1040,6 +1036,10 @@ def file_type_groups(row: ResultRow) -> tuple[str, str]:
         )
     ):
         return "Программы и код", "Отладка и карты исходного кода"
+    if re.match(r"^(?:license|licence|copying|notice)(?:[._-]|$)", name):
+        return "Документы", "Лицензии и уведомления"
+    if re.match(r"^readme(?:[._-]|$)", name):
+        return "Документы", "Обычный текст и разметка"
     if content in {"PEM private key", "PEM public key", "PEM certificate"}:
         return "Системные и служебные", "Сертификаты и ключи"
     if content == "Gettext translation catalog":
