@@ -518,7 +518,26 @@ def main():
         struct.pack_into("<I", data, 14, crc)
         (marker_input / "bad.zip").write_bytes(data)
 
+        sys.path.insert(0, str(ROOT))
+        sys.path.insert(0, str(ROOT / "tests"))
+        from test_folder_review import FolderReviewTests
+
+        grouping_input = base / "grouping-input"
+        grouping_input.mkdir()
+        grouping_data = FolderReviewTests().grouping_payloads()
+        for filename, (payload, _) in grouping_data.items():
+            (grouping_input / filename).write_bytes(payload)
+        make_zip(
+            grouping_input / "nested.zip",
+            {name: payload for name, (payload, _) in grouping_data.items()},
+        )
+        make_seven(
+            grouping_input / "nested.7z",
+            {name: payload for name, (payload, _) in grouping_data.items()},
+        )
+
         cases = [
+            ("logical-grouping", grouping_input, [], 0, output),
             ("presentation-markers", marker_input, [], 2, output),
             ("hashes-and-folders", hash_input, ["--full-metadata"], 0, output),
             ("complete", complete, [], 0, output),
@@ -562,6 +581,7 @@ def main():
                 leaf_input,
                 hash_input,
                 marker_input,
+                grouping_input,
                 *[case[1] for case in rar_cases],
             ]
             before = {str(folder): snapshot(folder) for folder in input_folders}
@@ -600,6 +620,26 @@ def main():
                         run.stderr,
                     )
                     current, status, count = normalized_workbook(target)
+                    if name == "logical-grouping":
+                        workbook = load_workbook(target, read_only=True, data_only=True)
+                        try:
+                            sheet = workbook["folder_review"]
+                            headings = next(
+                                sheet.iter_rows(min_row=6, max_row=6, values_only=True)
+                            )
+                            records = [
+                                dict(zip(headings, row))
+                                for row in sheet.iter_rows(min_row=7, values_only=True)
+                            ]
+                            assert len(records) == len(grouping_data) * 3
+                            for row in records:
+                                assert (
+                                    row["Type group"],
+                                    row["Type subgroup"],
+                                ) == grouping_data[row["File name"]][1]
+                                assert row["last"] == 1 and row["Virtual row"] == "нет"
+                        finally:
+                            workbook.close()
                     if name == "presentation-markers":
                         workbook = load_workbook(target, read_only=True, data_only=True)
                         try:

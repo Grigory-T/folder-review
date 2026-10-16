@@ -69,10 +69,18 @@ uv sync --frozen --no-dev
 - `Type group` and `Type subgroup` add two grouping levels above the
   extension: documents → spreadsheets, images → raster/vector, design → CAD/
   diagrams, software → code/installers, data → tables/databases/settings, etc.
-  Fixed MIME-style families and common filename conventions work identically
-  across machines. They classify suffixes, not verified content; the existing
-  content-type column remains separate. Unknown suffixes and extensionless
-  names have explicit fallback groups. Virtual rows have their own family.
+  Groups distinguish source/type declarations, compiled code, build metadata,
+  debugging/source maps, templates, translations, scientific arrays, ML models,
+  network captures, application resources, logs and licenses. Exact names and
+  compound suffixes precede broad suffix mappings (`CMakeLists.txt`, `py.typed`,
+  `.d.mts`, `.js.map`). Small headers already read by the scanner disambiguate
+  PEM keys, gettext templates, COFF/OBJ models, MPEG transport streams and PDBs.
+  These are classification hints, not format validation. No extra reads,
+  dependencies, OS registry or deserialization are used. The content-type column
+  remains separate. Ambiguous formats have an explicit fallback; `.dat`, `.bin`
+  and `.enc` receive generic data labels without claiming their exact format.
+  Unknown suffixes and extensionless names retain explicit fallbacks. Virtual
+  rows have their own family. Grouping never changes archive expansion.
 - XlsxWriter writes both delivery formats in constant-memory mode. Filenames
   remain text, including formula-like names and URLs. Colors, filters, dates,
   hierarchy and diagnostics retain the existing layout; minor width/row-height

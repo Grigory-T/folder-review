@@ -820,26 +820,22 @@ _EXTENSION_GROUPS = (
     (
         "Документы",
         "Текстовые документы",
-        "doc docx docm dot dotx dotm odt ott rtf pages wpd",
+        "doc docx docm dot dotx dotm odt ott rtf pages wpd chm",
     ),
     ("Документы", "Таблицы", "xls xlsx xlsm xlsb xlt xltx xltm xlc ods ots numbers"),
-    (
-        "Документы",
-        "Презентации",
-        "ppt pptx pptm pot potx potm pps ppsx ppsm odp otp key",
-    ),
+    ("Документы", "Презентации", "ppt pptx pptm potx potm pps ppsx ppsm odp otp"),
     ("Документы", "PDF и печатные документы", "pdf xps oxps ps eps"),
     ("Документы", "Электронные книги", "epub mobi azw azw3 fb2 djvu djv"),
     (
         "Документы",
         "Обычный текст и разметка",
-        "txt text md markdown rst adoc tex log nfo man 1 2 3 4 5 6 7 8 9",
+        "txt text md markdown rst adoc tex nfo man 1 2 3 4 5 6 7 8 9",
     ),
-    ("Документы", "Почта и календарь", "eml msg mbox pst ost ics vcf"),
+    ("Документы", "Почта и календарь", "eml msg mbox pst ost ics vcf oft"),
     (
         "Изображения",
         "Растровые изображения",
-        "jpg jpeg jpe png gif bmp dib tif tiff webp heic heif avif ico cur psd xcf",
+        "jpg jpeg jpe png gif bmp dib tif tiff webp heic heif avif ico cur psd xcf xbm xpm ppm pgm pbm pnm icns",
     ),
     ("Изображения", "Векторные изображения", "svg svgz ai emf wmf cdr"),
     ("Изображения", "Фотографии RAW", "raw cr2 cr3 nef nrw arw dng raf orf rw2 pef"),
@@ -852,7 +848,7 @@ _EXTENSION_GROUPS = (
     (
         "Видео",
         "Видеозаписи",
-        "mp4 m4v mkv avi mov qt webm wmv mpg mpeg m2v mts m2ts vob flv 3gp",
+        "mp4 m4v mkv avi mov qt webm wmv mpg mpeg m2v m2ts vob flv 3gp",
     ),
     ("Видео", "Субтитры", "srt ass ssa vtt sub"),
     ("Архивы и образы", "Архивы", "zip rar 7z tar cab cpio ar lzh lha ace"),
@@ -865,73 +861,106 @@ _EXTENSION_GROUPS = (
     (
         "Программы и код",
         "Программы и библиотеки",
-        "exe dll sys ocx cpl scr com so dylib pyd wasm",
+        "exe dll sys ocx cpl scr com so dylib pyd wasm lib a node class pyc pyo",
     ),
     (
         "Программы и код",
         "Пакеты и установщики",
-        "msi msp msix appx msixbundle appxbundle whl egg deb rpm apk aab ipa nupkg vsix crx xpi asar",
+        "msi msp msix appx msixbundle appxbundle whl egg deb rpm apk aab ipa nupkg vsix crx xpi asar jar war ear",
     ),
     (
         "Программы и код",
         "Исходный код и сценарии",
-        "py pyw pyi js mjs cjs ts tsx jsx c cc cpp cxx h hh hpp cs java class go rs rb php pl pm sh bash zsh fish bat cmd ps1 psm1 psd1 vbs vbe bas vb sql lua r swift kt kts dart scala groovy f f90 pas asm s",
+        "py pyw js mjs cjs ts tsx jsx c cc cpp cxx h hh hpp cs java go rs rb php pl pm sh bash zsh fish bat cmd ps1 psm1 psd1 vbs vbe bas vb sql lua r swift kt kts dart scala groovy f f90 pas asm s cts tcl tk tm csh tcsh nu xsh pyx pxd pxi pyf f95 f03 f08 for f77 coffee idl sct pys",
     ),
     (
         "Программы и код",
-        "Блокноты и сборка",
-        "ipynb make cmake sln csproj vbproj vcxproj gradle nuspec nuspectemplate",
+        "Сборка и метаданные пакетов",
+        "make cmake sln csproj vbproj vcxproj gradle nuspec nuspectemplate ninja nmake gyp gypi pc def nsi nsh wxs wixproj vc rc res",
     ),
     (
         "Программы и код",
         "Веб-страницы и стили",
-        "html htm xhtml css scss sass less asp aspx jsp vue svelte",
+        "html htm xhtml css scss sass less asp aspx jsp vue svelte jspf jspx tag tld",
     ),
     (
         "Данные и настройки",
         "Табличные данные",
-        "csv tsv parquet arrow feather avro orc",
+        "csv tsv parquet arrow feather avro orc tab",
     ),
     (
         "Данные и настройки",
         "Структурированные данные",
-        "json jsonl ndjson xml xsd xsl xslt rdf ttl yaml yml toml proto pb binarypb h5 hdf5 nc npy npz mat",
+        "json jsonl ndjson xml rdf ttl yaml yml pb binarypb msgpack cbor bson pkl pickle dtd webmanifest",
     ),
     (
         "Данные и настройки",
         "Базы данных",
-        "db sqlite sqlite3 db3 mdb accdb dbf odb db-journal db-wal db-shm",
+        "db sqlite sqlite3 db3 mdb accdb dbf odb db-journal db-wal db-shm ldb",
     ),
     (
         "Данные и настройки",
         "Настройки",
-        "ini cfg conf config cnf properties env reg desktop service socket target policy plist manifest jupyterlab-workspace",
+        "ini cfg conf config cnf properties env reg desktop service socket target policy plist manifest jupyterlab-workspace toml mplstyle defaults opts",
     ),
     (
         "Проектирование",
         "Схемы и диаграммы",
-        "vsd vsdx vsdm vss vssx vssm vst vstx vstm drawio dia",
+        "vsd vsdx vsdm vss vssx vssm vst vstx vstm drawio dia plantuml puml mmd",
     ),
     (
         "Проектирование",
         "Чертежи CAD",
         "dwg dxf dgn rvt rfa rft ifc fcstd sldprt sldasm slddrw ipt iam idw step stp iges igs",
     ),
-    ("Проектирование", "3D-модели", "stl obj fbx blend gltf glb 3ds dae skp max"),
-    ("Шрифты", "Файлы шрифтов", "ttf otf ttc woff woff2 eot pfb pfm afm bdf pcf"),
+    ("Проектирование", "3D-модели", "stl fbx blend gltf glb 3ds dae skp max"),
+    ("Шрифты", "Файлы шрифтов", "ttf otf ttc woff woff2 eot pfb pfm afm bdf pcf cff"),
     (
         "Системные и служебные",
         "Сертификаты и ключи",
-        "pem crt cer der pfx p12 p7b keytab pub",
+        "pem crt cer der pfx p12 p7b keytab pub cert certs keychain",
     ),
     (
         "Системные и служебные",
         "Кэш и временные файлы",
-        "tmp temp cache pyc pyo dmp dump swp swo part crdownload",
+        "tmp temp cache dmp dump swp swo part crdownload",
     ),
     ("Системные и служебные", "Ярлыки и ссылки", "lnk url webloc"),
     ("Системные и служебные", "Резервные копии", "bak backup old orig sav"),
-    ("Системные и служебные", "Файлы блокировки и состояния", "lock pid state stamp"),
+    (
+        "Системные и служебные",
+        "Файлы блокировки и состояния",
+        "lock pid state stamp tsbuildinfo fcrstate",
+    ),
+    ("Документы", "Лицензии и уведомления", "license licence"),
+    ("Системные и служебные", "Журналы", "log journal"),
+    (
+        "Системные и служебные",
+        "Контрольные суммы и подписи",
+        "sha256 sha256sum sha512 sha512sum md5 md5sum sig asc",
+    ),
+    ("Программы и код", "Интерактивные блокноты", "ipynb"),
+    ("Программы и код", "Объявления типов", "pyi"),
+    ("Программы и код", "Шаблоны", "j2 jinja jinja2 tpl tmpl template in"),
+    ("Программы и код", "Локализация и переводы", "po mo xliff xlf"),
+    (
+        "Программы и код",
+        "Схемы и описания интерфейсов",
+        "xsd xsl xslt proto pdl bnf ebnf lark",
+    ),
+    (
+        "Данные и настройки",
+        "Научные массивы и наборы данных",
+        "npy npz mat h5 hdf5 nc fits fit fts",
+    ),
+    ("Данные и настройки", "Модели машинного обучения", "tflite onnx safetensors"),
+    ("Данные и настройки", "Захваты сетевого трафика", "pcap pcapng cap"),
+    ("Данные и настройки", "Ресурсы приложений", "pak"),
+    (
+        "Данные и настройки",
+        "Данные неопределенного формата",
+        "dat bin enc idx store pack model",
+    ),
 )
 EXTENSION_GROUPS = {
     extension: (family, subtype)
@@ -941,14 +970,47 @@ EXTENSION_GROUPS = {
 
 
 def file_type_groups(row: ResultRow) -> tuple[str, str]:
+    """Deterministic display groups; never decide whether an archive expands."""
     if row.is_virtual:
         return "Служебные строки", VIRTUAL_MARKERS[row.virtual_reason or "empty"][1]
-    known = EXTENSION_GROUPS.get(row.extension)
-    if known is not None:
-        return known
     name = row.leaf_name.casefold()
-    if name in {"dockerfile", "makefile", "gnumakefile", "cmakelists.txt"}:
-        return "Программы и код", "Блокноты и сборка"
+    extension = row.extension
+    content = row.content_type
+    # Exact conventions precede broad suffix rules (CMakeLists.txt is not prose).
+    if name in {
+        "dockerfile",
+        "containerfile",
+        "makefile",
+        "gnumakefile",
+        "cmakelists.txt",
+        "meson.build",
+        "meson_options.txt",
+        "manifest.in",
+        "setup.py",
+        "setup.cfg",
+        "pyproject.toml",
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "cargo.toml",
+        "cargo.lock",
+        "go.mod",
+        "go.sum",
+        "pom.xml",
+        "build.gradle",
+        "settings.gradle",
+        "requirements.txt",
+        "environment.yml",
+    }:
+        return "Программы и код", "Сборка и метаданные пакетов"
+    if name in {"sha256sums", "sha512sums", "md5sums", "checksums"}:
+        return "Системные и служебные", "Контрольные суммы и подписи"
+    if name in {"thumbs.db", "ehthumbs.db", ".ds_store"} or re.fullmatch(
+        r"(?:thumbcache|iconcache)_[^.]+\.db", name
+    ):
+        return "Системные и служебные", "Кэш и временные файлы"
+    if name == "py.typed" or name.endswith((".d.ts", ".d.cts", ".d.mts")):
+        return "Программы и код", "Объявления типов"
     if name in {
         ".gitignore",
         ".gitattributes",
@@ -956,11 +1018,58 @@ def file_type_groups(row: ResultRow) -> tuple[str, str]:
         ".dockerignore",
         ".env",
         ".editorconfig",
+        ".npmrc",
+        ".yarnrc",
     }:
         return "Данные и настройки", "Настройки"
-    if name.startswith(("license", "licence", "copying", "readme", "notice")):
+    if name in {".lock", ".pid"}:
+        return "Системные и служебные", "Файлы блокировки и состояния"
+    if re.match(r"^(?:license|licence|copying|notice)(?:[._-]|$)", name):
+        return "Документы", "Лицензии и уведомления"
+    if re.match(r"^readme(?:[._-]|$)", name):
         return "Документы", "Обычный текст и разметка"
-    return "Прочее", "Неизвестное расширение" if row.extension else "Без расширения"
+    if name.endswith(
+        (
+            ".js.map",
+            ".mjs.map",
+            ".cjs.map",
+            ".css.map",
+            ".ts.map",
+            ".tsx.map",
+            ".jsx.map",
+        )
+    ):
+        return "Программы и код", "Отладка и карты исходного кода"
+    if content in {"PEM private key", "PEM public key", "PEM certificate"}:
+        return "Системные и служебные", "Сертификаты и ключи"
+    if content == "Gettext translation catalog":
+        return "Программы и код", "Локализация и переводы"
+    if content in {
+        "COFF object file",
+        "ELF executable",
+        "Windows executable / DLL",
+        "Mach-O binary",
+    }:
+        return "Программы и код", "Программы и библиотеки"
+    if content == "Program database (PDB)":
+        return "Программы и код", "Отладка и карты исходного кода"
+    if content == "Wavefront OBJ model":
+        return "Проектирование", "3D-модели"
+    if content == "MPEG transport stream":
+        return "Видео", "Видеозаписи"
+    if extension == "mts" and content.startswith("Text ("):
+        return "Программы и код", "Исходный код и сценарии"
+    if extension == "pot" and content.startswith("PowerPoint "):
+        return "Документы", "Презентации"
+    if extension == "key" and content.startswith("ZIP "):
+        return "Документы", "Презентации"
+    # These extensions genuinely have unrelated uses; no single blind mapping.
+    if extension in {"key", "pot", "obj", "mts", "pdb", "map"}:
+        return "Прочее", "Неоднозначный формат"
+    known = EXTENSION_GROUPS.get(extension)
+    if known is not None:
+        return known
+    return "Прочее", "Неизвестное расширение" if extension else "Без расширения"
 
 
 def recognized_file_role(name: str, content_type: str | None = None) -> str | None:
@@ -1387,6 +1496,77 @@ def classify_ole_path(file_path: str) -> str:
     return "OLE2 compound file"
 
 
+def refine_grouping_content(name: str, data: bytes, content: str) -> str:
+    """Use bounded, already-read headers to resolve common ambiguous suffixes.
+
+    These are format hints, not validators. Never execute/deserialise input or
+    inspect package internals to group a leaf. Preserve archive routing labels.
+    """
+    extension = extension_of(name)
+    sample = data[:MAGIC_READ_SIZE]
+    text = content.startswith("Text (")
+    if sample.startswith(
+        (
+            b"-----BEGIN PRIVATE KEY-----",
+            b"-----BEGIN RSA PRIVATE KEY-----",
+            b"-----BEGIN EC PRIVATE KEY-----",
+            b"-----BEGIN DSA PRIVATE KEY-----",
+            b"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+            b"-----BEGIN OPENSSH PRIVATE KEY-----",
+        )
+    ):
+        return "PEM private key"
+    if sample.startswith(
+        (b"-----BEGIN PUBLIC KEY-----", b"-----BEGIN RSA PUBLIC KEY-----")
+    ):
+        return "PEM public key"
+    if sample.startswith(b"-----BEGIN CERTIFICATE-----"):
+        return "PEM certificate"
+    if (
+        extension in {"po", "pot"}
+        and text
+        and re.search(rb'^msgid\s+"', sample, re.MULTILINE)
+        and re.search(rb'^msgstr\s+"', sample, re.MULTILINE)
+    ):
+        return "Gettext translation catalog"
+    if extension == "obj":
+        if len(sample) >= 20:
+            machine = int.from_bytes(sample[:2], "little")
+            sections = int.from_bytes(sample[2:4], "little")
+            optional_size = int.from_bytes(sample[16:18], "little")
+            flags = int.from_bytes(sample[18:20], "little")
+            if (
+                machine in {0x14C, 0x8664, 0xAA64, 0x1C0, 0x1C4}
+                and 0 < sections <= 96
+                and optional_size == 0
+                and not flags & 0x2002
+                and 20 + sections * 40 <= len(sample)
+            ):
+                return "COFF object file"
+        if text and re.search(
+            rb"^v[ \t]+[-+.0-9]+[ \t]+[-+.0-9]+[ \t]+[-+.0-9]+", sample, re.MULTILINE
+        ):
+            return "Wavefront OBJ model"
+    if extension in {"mts", "ts", "m2ts"}:
+        for offset, stride in ((0, 188), (4, 192)):
+            if len(sample) > offset + 2 * stride and all(
+                sample[offset + i * stride] == 0x47 for i in range(3)
+            ):
+                return "MPEG transport stream"
+    if extension == "pdb" and sample.startswith(
+        b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\x00\x00\x00"
+    ):
+        return "Program database (PDB)"
+    if content == "Unknown binary" and sample[:4] in {
+        b"\xfe\xed\xfa\xce",
+        b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf",
+        b"\xcf\xfa\xed\xfe",
+    }:
+        return "Mach-O binary"
+    return content
+
+
 def inspect_file(file_path: str) -> tuple[str, str | None]:
     try:
         with open(extended_path(file_path), "rb", buffering=0) as file:
@@ -1399,7 +1579,9 @@ def inspect_file(file_path: str) -> tuple[str, str | None]:
         file_type = classify_zip_path(file_path)
     elif file_type == "OLE2 compound file":
         file_type = classify_ole_path(file_path)
-    return file_type, detect_bom(head) or BOM_NOT_PRESENT
+    return refine_grouping_content(file_path, head, file_type), detect_bom(
+        head
+    ) or BOM_NOT_PRESENT
 
 
 def detect_file_type(file_path: str) -> str:
@@ -1648,7 +1830,7 @@ def member_content_type(data: bytes, name: str) -> str:
     file_type = detect_magic(data)
     if file_type == "ZIP container" and extension_of(name) not in ARCHIVE_EXTENSIONS:
         return ZIP_LEAF_FORMATS.get(extension_of(name), "ZIP container (leaf file)")
-    return file_type
+    return refine_grouping_content(name, data, file_type)
 
 
 def read_counted(stream, size: int, budget: WorkBudget) -> bytes:

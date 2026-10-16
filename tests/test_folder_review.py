@@ -269,7 +269,7 @@ class FolderReviewTests(unittest.TestCase):
             "plain": ("Прочее", "Без расширения"),
             "data.unusual-suffix": ("Прочее", "Неизвестное расширение"),
             ".env": ("Данные и настройки", "Настройки"),
-            "Makefile": ("Программы и код", "Блокноты и сборка"),
+            "Makefile": ("Программы и код", "Сборка и метаданные пакетов"),
         }
         for name, expected in cases.items():
             row = folder_review.make_row(
@@ -283,6 +283,176 @@ class FolderReviewTests(unittest.TestCase):
         ]
         self.assertEqual(
             len(extensions), len(set(extensions)), "Each suffix must have one grouping"
+        )
+
+    def test_expanded_grouping_and_exact_filename_precedence(self) -> None:
+        cases = {
+            "CMakeLists.txt": ("Программы и код", "Сборка и метаданные пакетов"),
+            "meson.build": ("Программы и код", "Сборка и метаданные пакетов"),
+            "MANIFEST.in": ("Программы и код", "Сборка и метаданные пакетов"),
+            "pyproject.toml": ("Программы и код", "Сборка и метаданные пакетов"),
+            "settings.toml": ("Данные и настройки", "Настройки"),
+            "py.typed": ("Программы и код", "Объявления типов"),
+            "index.d.mts": ("Программы и код", "Объявления типов"),
+            "index.d.cts": ("Программы и код", "Объявления типов"),
+            "index.d.ts": ("Программы и код", "Объявления типов"),
+            "file.pyi": ("Программы и код", "Объявления типов"),
+            "app.js.map": ("Программы и код", "Отладка и карты исходного кода"),
+            "style.css.map": ("Программы и код", "Отладка и карты исходного кода"),
+            "module.cts": ("Программы и код", "Исходный код и сценарии"),
+            "module.tcl": ("Программы и код", "Исходный код и сценарии"),
+            "module.pyx": ("Программы и код", "Исходный код и сценарии"),
+            "module.pxd": ("Программы и код", "Исходный код и сценарии"),
+            "code.class": ("Программы и код", "Программы и библиотеки"),
+            "code.pyc": ("Программы и код", "Программы и библиотеки"),
+            "code.lib": ("Программы и код", "Программы и библиотеки"),
+            "addon.node": ("Программы и код", "Программы и библиотеки"),
+            "app.jar": ("Программы и код", "Пакеты и установщики"),
+            "app.war": ("Программы и код", "Пакеты и установщики"),
+            "index.j2": ("Программы и код", "Шаблоны"),
+            "locale.mo": ("Программы и код", "Локализация и переводы"),
+            "style.mplstyle": ("Данные и настройки", "Настройки"),
+            "data.msgpack": ("Данные и настройки", "Структурированные данные"),
+            "data.npz": ("Данные и настройки", "Научные массивы и наборы данных"),
+            "sky.fits": ("Данные и настройки", "Научные массивы и наборы данных"),
+            "network.pcapng": ("Данные и настройки", "Захваты сетевого трафика"),
+            "weights.tflite": ("Данные и настройки", "Модели машинного обучения"),
+            "assets.pak": ("Данные и настройки", "Ресурсы приложений"),
+            "data.dat": ("Данные и настройки", "Данные неопределенного формата"),
+            "secret.enc": ("Данные и настройки", "Данные неопределенного формата"),
+            "LICENSE.python": ("Документы", "Лицензии и уведомления"),
+            "README.md": ("Документы", "Обычный текст и разметка"),
+            "server.log": ("Системные и служебные", "Журналы"),
+            "SHA256SUMS.sha256": (
+                "Системные и служебные",
+                "Контрольные суммы и подписи",
+            ),
+            ".lock": ("Системные и служебные", "Файлы блокировки и состояния"),
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                row = folder_review.make_row(name, (name,), 0, "Unknown binary", False)
+                self.assertEqual(folder_review.file_type_groups(row), expected)
+        for extension in ("obj", "key", "pot", "mts", "map", "pdb"):
+            row = folder_review.make_row(
+                "file." + extension, ("file." + extension,), 0, "Unknown binary", False
+            )
+            self.assertEqual(
+                folder_review.file_type_groups(row), ("Прочее", "Неоднозначный формат")
+            )
+
+    def grouping_payloads(self):
+        obj = struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 0, 0) + bytes(40)
+        ts = bytes([0x47]) + bytes(187)
+        return {
+            "test.key": (
+                b"-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n",
+                ("Системные и служебные", "Сертификаты и ключи"),
+            ),
+            "messages.pot": (
+                b'# translation template\nmsgid ""\nmsgstr ""\n',
+                ("Программы и код", "Локализация и переводы"),
+            ),
+            "code.obj": (obj, ("Программы и код", "Программы и библиотеки")),
+            "mesh.obj": (
+                b"v 0 0 0\nv 1 1 1\nf 1 2 3\n",
+                ("Проектирование", "3D-модели"),
+            ),
+            "index.mts": (
+                b"export const value = 1;\n",
+                ("Программы и код", "Исходный код и сценарии"),
+            ),
+            "film.mts": (ts * 3, ("Видео", "Видеозаписи")),
+            "film.ts": (ts * 3, ("Видео", "Видеозаписи")),
+            "debug.pdb": (
+                b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\x00\x00\x00" + bytes(64),
+                ("Программы и код", "Отладка и карты исходного кода"),
+            ),
+            "native.bare": (
+                b"\x7fELF" + bytes(64),
+                ("Программы и код", "Программы и библиотеки"),
+            ),
+            "native.unknown": (
+                b"\xcf\xfa\xed\xfe" + bytes(64),
+                ("Программы и код", "Программы и библиотеки"),
+            ),
+            "CMakeLists.txt": (
+                b"project(example)\n",
+                ("Программы и код", "Сборка и метаданные пакетов"),
+            ),
+            "app.js.map": (
+                b'{"version":3,"sources":[]}',
+                ("Программы и код", "Отладка и карты исходного кода"),
+            ),
+        }
+
+    def test_grouping_content_evidence_matches_disk_zip_and_7z(self) -> None:
+        data = self.grouping_payloads()
+        inputs = self.root / "group-input"
+        inputs.mkdir()
+        for name, (payload, _) in data.items():
+            (inputs / name).write_bytes(payload)
+        zip_path = self.make_zip(
+            self.root / "groups.zip",
+            {name: payload for name, (payload, _) in data.items()},
+        )
+        seven = self.make_7z(
+            self.root / "groups.7z",
+            {name: payload for name, (payload, _) in data.items()},
+        )
+        disk = folder_review.inspect_files(
+            folder_review.scan_tree(str(inputs), set(), 2)[0], 2
+        )
+        for rows in (disk, self.inspect(zip_path), self.inspect(seven)):
+            self.assertEqual(len(rows), len(data))
+            for row in rows:
+                self.assertIsNone(row.error)
+                self.assertEqual(
+                    folder_review.file_type_groups(row),
+                    data[row.leaf_name][1],
+                    row.leaf_name,
+                )
+                self.assertEqual(
+                    row.content_hash, blake3(data[row.leaf_name][0]).digest()
+                )
+
+    def test_grouping_hints_preserve_archive_routing_and_reject_short_headers(
+        self,
+    ) -> None:
+        for signature, name in (
+            (b"PK\x03\x04", "ZIP container"),
+            (b"Rar!\x1a\x07\x00", "RAR archive"),
+            (b"7z\xbc\xaf\x27\x1c", "7z archive"),
+        ):
+            self.assertEqual(
+                folder_review.refine_grouping_content("data.zip", signature, name), name
+            )
+        for name, data in (
+            ("bad.obj", b"\x64\x86"),
+            ("bad.pdb", b"Microsoft C/C++"),
+            ("bad.mts", b"G"),
+            ("bad.pot", b"msgid only"),
+            ("bad.key", b"private key"),
+        ):
+            content = folder_review.member_content_type(data, name)
+            row = folder_review.make_row(name, (name,), len(data), content, False)
+            expected = (
+                ("Программы и код", "Исходный код и сценарии")
+                if name.endswith(".mts")
+                else ("Прочее", "Неоднозначный формат")
+            )
+            self.assertEqual(folder_review.file_type_groups(row), expected)
+        row = folder_review.make_row(
+            "slides.pot", ("slides.pot",), 0, "PowerPoint presentation (PPT)", False
+        )
+        self.assertEqual(
+            folder_review.file_type_groups(row), ("Документы", "Презентации")
+        )
+        row = folder_review.make_row(
+            "slides.key", ("slides.key",), 0, "ZIP container (leaf file)", False
+        )
+        self.assertEqual(
+            folder_review.file_type_groups(row), ("Документы", "Презентации")
         )
 
     def test_fingerprints_match_physical_zip_7z_and_nested_content(self) -> None:
