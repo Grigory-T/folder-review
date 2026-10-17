@@ -16,6 +16,16 @@ local folder and run it, or use:
 .\folder-review.exe --root "C:\Data" --output "C:\Reports\folder-review.xlsx"
 ```
 
+Double-click `folder-review.exe` to open the desktop window. Browse for a folder
+or paste its path, choose the report location, and click **Create Excel report**.
+The window shows progress and COMPLETE/PARTIAL status, with an action to open the
+report folder. Worker and advanced-metadata options use the same scanner as CLI.
+The desktop window is also the default for Python/RUN.bat; Python needs Tkinter
+in its installation. The standalone EXE bundles Tcl/Tk.
+
+Passing command-line options preserves CLI operation. Use `--cli` for the
+terminal folder prompt, or `--gui` on its own for the desktop window.
+
 The output folder must exist. Without `--output`, the report is saved beside
 the program. The tool and report may sit inside the scanned folder; the selected
 report is excluded from the inventory. Local and SMB report destinations are

@@ -1769,7 +1769,9 @@ def scan_tree(
     root_folder: str,
     excluded_paths: set[str],
     workers: int = DEFAULT_WORKERS,
+    progress=None,
 ) -> tuple[list[PhysicalFile], ScanStats]:
+    emit = progress or print
     all_files: list[PhysicalFile] = []
     stats = ScanStats()
     last_print = time.monotonic()
@@ -1797,7 +1799,7 @@ def scan_tree(
 
             now = time.monotonic()
             if now - last_print >= 10:
-                print(
+                emit(
                     f"Folders: {stats.folders:,} | files: {len(all_files):,} | "
                     f"skipped folders: {stats.skipped_folders:,}"
                 )
@@ -2755,7 +2757,9 @@ def inspect_files(
     physical_files: list[PhysicalFile],
     workers: int = DEFAULT_WORKERS,
     budget: WorkBudget | None = None,
+    progress=None,
 ) -> list[ResultRow]:
+    emit = progress or print
     if budget is None:
         budget = WorkBudget()
     budget.initialize_rows(len(physical_files))
@@ -2784,7 +2788,7 @@ def inspect_files(
 
             now = time.monotonic()
             if now - last_print >= 10:
-                print(
+                emit(
                     f"Inspected physical files: {completed:,} / {len(physical_files):,} | "
                     f"logical rows: {len(rows):,}"
                 )
@@ -3642,8 +3646,13 @@ def row_limit(value: str) -> int:
     return limit
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--cli",
+        action="store_true",
+        help="Use terminal prompts instead of the desktop window",
+    )
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
     parser.add_argument("--output", help="Override the XLSX report path (local or SMB)")
     parser.add_argument(
@@ -3675,7 +3684,7 @@ def parse_args() -> argparse.Namespace:
         default=EXCEL_MAX_DATA_ROWS,
         help=f"Maximum logical rows (default: {EXCEL_MAX_DATA_ROWS:,})",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def run() -> int:
@@ -3699,26 +3708,45 @@ def run() -> int:
             )
         if not configured_root:
             raise ValueError("No folder was entered.")
+    output_path = Path(
+        absolute_path(args.output) if args.output else str(script_dir / OUTPUT_FILE)
+    )
+    return execute_review(args, configured_root, output_path)
+
+
+def execute_review(args, configured_root: str, output_path: Path, progress=None) -> int:
+    validate_platform()
+    if not configured_root:
+        raise ValueError("Choose a folder to inspect.")
     root_folder = absolute_path(os.path.normpath(configured_root))
     if not os.path.isdir(extended_path(root_folder)):
         raise ValueError(f"Folder is unavailable: {root_folder}")
 
-    output_path = Path(
-        absolute_path(args.output) if args.output else str(script_dir / OUTPUT_FILE)
-    )
     if output_path.suffix.lower() != ".xlsx":
         raise ValueError("Output file must use the .xlsx extension.")
     if not os.path.isdir(extended_path(output_path.parent)):
         raise ValueError(f"Output folder is unavailable: {output_path.parent}")
 
-    if not local_storage(script_dir):
+    if not local_storage(os.path.dirname(absolute_path(__file__))):
         raise ValueError("Copy the tool to a local folder before running it.")
     validate_output_path(output_path, root_folder)
 
     if args.workers is None:
         args.workers = choose_workers(root_folder)
     with safe_runtime(root_folder, output_path):
-        return scan_and_report(args, root_folder, output_path)
+        return scan_and_report(args, root_folder, output_path, progress)
+
+
+def review_folder(
+    root: str, output: str, workers="auto", full_metadata=False, progress=None
+) -> int:
+    """Shared scanner entry for desktop clients; no global argv/stdout changes."""
+    args = parse_args([])
+    args.workers = worker_count(str(workers))
+    args.full_metadata = bool(full_metadata)
+    return execute_review(
+        args, pasted_path(root), Path(absolute_path(pasted_path(output))), progress
+    )
 
 
 def report_exclusions(output: Path, root: str) -> set[str]:
@@ -3742,19 +3770,29 @@ def report_exclusions(output: Path, root: str) -> set[str]:
 
 
 def scan_and_report(
-    args: argparse.Namespace, root_folder: str, output_path: Path
+    args: argparse.Namespace,
+    root_folder: str,
+    output_path: Path,
+    progress=None,
 ) -> int:
+    def emit(message, **options):
+        if progress is None:
+            print(message, **options)
+        else:
+            progress(message)
+
     configure_rar_backend()
     started = time.monotonic()
     started_at = local_now()
-    print(f"Scanning: {root_folder}")
-    print(f"Workers: {args.workers}")
+    emit(f"Scanning: {root_folder}")
+    emit(f"Workers: {args.workers}")
     physical_files, stats = scan_tree(
         root_folder,
         report_exclusions(output_path, root_folder),
         args.workers,
+        progress=progress,
     )
-    print(
+    emit(
         f"Physical items found: {sum(not item.virtual_folder for item in physical_files):,}"
     )
     physical_files, physical_items_found = apply_physical_row_limit(
@@ -3765,7 +3803,7 @@ def scan_and_report(
     )
     selected_physical = sum(not item.virtual_folder for item in physical_files)
     if selected_physical < physical_items_found:
-        print(
+        emit(
             f"Physical items selected for inspection: {selected_physical:,} "
             f"({physical_items_found - selected_physical:,} omitted by row limit)"
         )
@@ -3785,8 +3823,8 @@ def scan_and_report(
             else time.monotonic() + max_archive_seconds
         ),
     )
-    rows = inspect_files(physical_files, args.workers, budget)
-    print(f"Logical file rows: {len(rows):,}")
+    rows = inspect_files(physical_files, args.workers, budget, progress=progress)
+    emit(f"Logical file rows: {len(rows):,}")
 
     errors = sum(row.error is not None for row in rows)
     partial = bool(
@@ -3806,21 +3844,21 @@ def scan_and_report(
         max_archive_seconds=max_archive_seconds,
         max_rows=args.max_rows,
     )
-    print("Writing Excel workbook...")
+    emit("Writing Excel workbook...")
     write_workbook(
         rows, output_path, root_folder, report, full_metadata=args.full_metadata
     )
 
     elapsed = time.monotonic() - started
-    print(
+    emit(
         f"Done in {elapsed:.1f}s | folders: {stats.folders:,} | "
         f"skipped folders: {stats.skipped_folders:,} | skipped entries: {stats.skipped_entries:,} | "
         f"rows with errors: {errors:,}"
     )
-    print(f"Scan status: {report.status}")
-    print(f"Result: {output_path}")
+    emit(f"Scan status: {report.status}")
+    emit(f"Result: {output_path}")
     if partial:
-        print(
+        emit(
             "WARNING: Partial result. Review the scan_status sheet.",
             flush=True,
         )
@@ -3830,6 +3868,13 @@ def scan_and_report(
 
 def main() -> int:
     try:
+        validate_platform()
+        if not sys.argv[1:] or sys.argv[1:] == ["--gui"]:
+            from folder_review_ui import launch
+
+            return launch()
+        if "--gui" in sys.argv[1:]:
+            raise ValueError("Use --gui on its own; choose options in the window.")
         return run()
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

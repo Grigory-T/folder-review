@@ -97,7 +97,19 @@ def inspect_payload(exe):
         assert not any(
             name == module or name.startswith(module + ".") for name in pyz.toc
         )
+    ui_code = pyz.extract("folder_review_ui")
+    ui_original = compile(
+        (ROOT / "folder_review_ui.py").read_bytes(),
+        "folder_review_ui.py",
+        "exec",
+        optimize=0,
+    )
+    assert marshal.dumps(normalized_code(ui_code)) == marshal.dumps(
+        normalized_code(ui_original)
+    ), "Embedded UI differs from source"
     for module in (
+        "folder_review_ui",
+        "tkinter",
         "folder_review",
         "xlsxwriter",
         "blake3",
@@ -841,7 +853,7 @@ def main():
                 (["--root", str(complete), "--output", str(output / "invalid.csv")], 1),
                 (["--workers", "0"], 2),
                 (["--help"], 0),
-                ([], 1),
+                (["--cli"], 1),
             ):
                 old = subprocess.run(
                     [sys.executable, str(ROOT / "folder_review.py"), *flags],

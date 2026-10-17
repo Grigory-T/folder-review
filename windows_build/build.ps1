@@ -70,7 +70,7 @@ Copy-Item (Join-Path $SevenZipDir 'License.txt') '.build\release\7zip-license.tx
 # Both deliveries come from these same inputs; manifest preparation verifies
 # that no older standalone Python scanner can be published beside this EXE.
 New-Item -ItemType Directory -Force -Path '.build\release\python' | Out-Null
-Copy-Item 'folder_review.py', 'pyproject.toml', 'uv.lock', 'RUN.bat', 'SETUP.bat', 'README.md', 'LICENSE' '.build\release\python' -Force
+Copy-Item 'folder_review.py', 'folder_review_ui.py', 'pyproject.toml', 'uv.lock', 'RUN.bat', 'SETUP.bat', 'README.md', 'LICENSE' '.build\release\python' -Force
 Invoke-Native $py @('windows_build\manifest.py', '--exe', '.build\release\folder-review.exe', '--output', '.build\release\build-manifest.json')
 New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
 Copy-Item '.build\release\*' 'dist' -Recurse -Force

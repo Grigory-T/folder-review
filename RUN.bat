@@ -9,6 +9,11 @@ if not exist "%~dp0.venv\Scripts\python.exe" (
     exit /b 1
 )
 
+if "%~1"=="" (
+    start "" ".venv\Scripts\pythonw.exe" -B "folder_review.py"
+    exit /b 0
+)
+
 echo Running folder review...
 ".venv\Scripts\python.exe" -B "folder_review.py" %*
 set "RUN_EXIT=%ERRORLEVEL%"

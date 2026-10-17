@@ -56,6 +56,9 @@ may supply the release's full commit ID; input hashes remain independently recor
 
 ## Packaging behavior
 
+No arguments launch the Tkinter desktop; CLI arguments preserve the terminal
+workflow. Tcl/Tk is bundled. The console-enabled bootloader hides only its own
+new console, preserving an existing terminal and redirected CLI streams.
 The adapter places default output beside the EXE, selects bundled 7-Zip for RAR,
 and escapes unprintable console diagnostics. Scanner logic is shared unchanged.
 The runtime unpacks to OS temp and is normally removed on exit. Inputs containing

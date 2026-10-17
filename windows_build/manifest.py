@@ -94,6 +94,10 @@ def main():
         except metadata.PackageNotFoundError:
             continue  # uv.lock also describes other Python implementations/OSes.
     collect_licenses(args.output.parent / "third-party-licenses", distributions, lock)
+    tkinter_license = Path(sys.base_prefix) / "tcl/tk8.6/license.terms"
+    shutil.copyfile(
+        tkinter_license, args.output.parent / "third-party-licenses/Tcl-Tk-LICENSE.txt"
+    )
     archive = CArchiveReader(str(args.exe.resolve()))
     try:
         commit = subprocess.check_output(
@@ -105,6 +109,8 @@ def main():
             raise ValueError("Source commit must be a full lowercase Git SHA-1")
     inputs = [
         ROOT / "folder_review.py",
+        ROOT / "folder_review_ui.py",
+        ROOT / "tests/test_folder_review_ui.py",
         ROOT / "BUILD-EXE.bat",
         ROOT / "RUN.bat",
         ROOT / "SETUP.bat",
@@ -117,6 +123,7 @@ def main():
     ]
     python_files = (
         "folder_review.py",
+        "folder_review_ui.py",
         "pyproject.toml",
         "uv.lock",
         "RUN.bat",

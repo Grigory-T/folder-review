@@ -8,6 +8,9 @@ testing = os.environ.get('FOLDER_REVIEW_BUILD_TESTS') == '1'
 name = 'folder-review-tests' if testing else 'folder-review'
 entry = root / 'windows_build' / ('test_entry.py' if testing else 'entry.py')
 data = [(str(sevenzip / 'License.txt'), 'licenses/7zip')]
+# Tk's license covers the Tcl/Tk runtime distributed with Python.
+import sys
+data.append((str(Path(sys.base_prefix) / 'tcl/tk8.6/license.terms'), 'licenses/tcl-tk'))
 if testing:
     data.append((str(root / 'tests' / 'fixtures'), 'fixtures'))
 
@@ -42,5 +45,6 @@ exe = EXE(
     strip=False,
     upx=False,
     console=True,
+    hide_console=None if testing else "hide-early",
     version=str(root / 'windows_build' / 'version.txt'),
 )

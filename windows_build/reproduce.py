@@ -33,6 +33,8 @@ def main():
     original = args.exe.resolve()
     inputs = [
         ROOT / "folder_review.py",
+        ROOT / "folder_review_ui.py",
+        ROOT / "tests/test_folder_review_ui.py",
         ROOT / "BUILD-EXE.bat",
         ROOT / "RUN.bat",
         ROOT / "SETUP.bat",

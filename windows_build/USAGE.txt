@@ -1,7 +1,11 @@
-Folder Review 0.13.0 - Windows x86-64
+Folder Review 0.14.0 - Windows x86-64
 
 Copy this folder to a writable local folder on the Windows computer.
-Run folder-review.exe and enter the folder to inspect when prompted.
+Double-click folder-review.exe to open the desktop window. Browse for a folder
+or paste its path, choose the report path, and click Create Excel report.
+Progress, COMPLETE/PARTIAL status and Open report folder stay in the window.
+Auto/manual workers and advanced metadata use the same scanner as the CLI.
+Use --cli for the terminal folder prompt; --gui alone opens the window.
 Local folders, mapped drives, and UNC paths are supported.
 
 For command-line use:

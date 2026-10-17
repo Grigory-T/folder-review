@@ -1,5 +1,6 @@
-Folder Review uses Python, XlsxWriter, BLAKE3, olefile, py7zr, rarfile and their dependencies.
+Folder Review uses Python/Tkinter (Tcl/Tk), XlsxWriter, BLAKE3, olefile, py7zr, rarfile and their dependencies.
 openpyxl is used only by validation tests and is not bundled in the production EXE.
+Tcl/Tk supplies the desktop window; it is bundled in the EXE.
 Their license texts are included in third-party-licenses/ in the release folder.
 
 This distribution includes parts of 7-Zip 26.04 (7z.exe and 7z.dll).
