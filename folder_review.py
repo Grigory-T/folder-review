@@ -3721,6 +3721,26 @@ def run() -> int:
         return scan_and_report(args, root_folder, output_path)
 
 
+def report_exclusions(output: Path, root: str) -> set[str]:
+    """Resolve report-parent aliases once, avoiding extra per-file metadata I/O."""
+    excluded = {normalized_key(output)}
+    parent = resolved_path(output.parent)
+    parts = [output.name]
+    while True:
+        try:
+            if os.path.samefile(extended_path(parent), extended_path(root)):
+                excluded.add(normalized_key(os.path.join(root, *reversed(parts))))
+                break
+        except OSError:
+            pass
+        ancestor = os.path.dirname(parent)
+        if ancestor == parent:
+            break
+        parts.append(os.path.basename(parent))
+        parent = ancestor
+    return excluded
+
+
 def scan_and_report(
     args: argparse.Namespace, root_folder: str, output_path: Path
 ) -> int:
@@ -3731,7 +3751,7 @@ def scan_and_report(
     print(f"Workers: {args.workers}")
     physical_files, stats = scan_tree(
         root_folder,
-        {normalized_key(str(output_path))},
+        report_exclusions(output_path, root_folder),
         args.workers,
     )
     print(

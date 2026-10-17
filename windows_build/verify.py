@@ -599,7 +599,8 @@ def main():
                     ("exe", [str(exe)], minimal_env),
                 ):
                     target = (
-                        source / "folder-review.xlsx"
+                        (complete if name == "SMB-report" else source)
+                        / "folder-review.xlsx"
                         if name in {"inside-report", "SMB-report"}
                         else destination / f"{name}-{label}.xlsx"
                     )

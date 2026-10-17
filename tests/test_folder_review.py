@@ -2028,6 +2028,10 @@ class FolderReviewTests(unittest.TestCase):
             folder_review.validate_output_path(alias / "report.xlsx", str(input_root))
             with folder_review.safe_runtime(str(input_root), alias / "report.xlsx"):
                 folder_review.write_workbook([], alias / "report.xlsx", str(input_root))
+            self.assertIn(
+                folder_review.normalized_key(output),
+                folder_review.report_exclusions(alias / "report.xlsx", str(input_root)),
+            )
             output.unlink()
             with (
                 folder_review.safe_runtime(str(input_root), self.root / "outside.xlsx"),
