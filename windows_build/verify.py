@@ -661,7 +661,7 @@ def main():
                                     row["Type group"],
                                     row["Type subgroup"],
                                 ) == grouping_data[row["File name"]][1]
-                                assert row["last"] == 1 and row["Virtual row"] == "нет"
+                                assert row["last"] == 1 and row["Virtual row"] == "No"
                         finally:
                             workbook.close()
                     if name == "presentation-markers":
@@ -682,7 +682,7 @@ def main():
                             }
                             assert all(
                                 row["last"] == 1
-                                and row["Virtual row"] == "да"
+                                and row["Virtual row"] == "Yes"
                                 and row["Duplicate group"] is None
                                 for row in records
                             )
@@ -698,7 +698,7 @@ def main():
                             values = list(sheet.iter_rows(min_row=7, values_only=True))
                             records = [dict(zip(headings, row)) for row in values]
                             markers = [
-                                row for row in records if row["Virtual row"] == "да"
+                                row for row in records if row["Virtual row"] == "Yes"
                             ]
                             assert len(markers) == 2
                             assert all(
@@ -751,7 +751,7 @@ def main():
                                     min_row=6, max_row=6, values_only=True
                                 )
                             )
-                            path_column = headers.index("Full path")
+                            path_column = headers.index("Relative path")
                             filename_column = headers.index("File name")
                             for row in workbook["folder_review"].iter_rows(
                                 min_row=7, values_only=True

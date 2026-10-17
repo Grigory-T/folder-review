@@ -48,7 +48,7 @@ Raw BLAKE3 is available with --full-metadata.
 last is ALWAYS 1. Filter Virtual row and Inspection state to select rows for analysis.
 Virtual markers: dummy.dummy (no inventoried files), deny.deny (access denied),
 password.password, corrupt.corrupt, limit.limit and error.error. No file is
-created. Original locations remain in hierarchy/full paths; errors and known
+created. Original locations remain in hierarchy/relative paths; errors and known
 sizes remain visible. Virtual rows have no content ID or extension.
 File type group and subgroup provide two levels above the extension, using
 fixed common categories. Content recognition remains a separate column.
@@ -68,3 +68,8 @@ inside archives too. A raw archive renamed to .bin is intentionally a leaf.
 Recognized document packages renamed to .zip remain leaves as well.
 
 python/ contains the matching Python delivery of this same scanner.
+
+Report labels and technical values are English; original names and diagnostic
+messages are preserved. The full selected root appears above the inventory.
+Relative path is relative to that root; :: separates archive members.
+Inventory zoom is 70%; scan_status uses readable column widths.

@@ -51,7 +51,8 @@ uv sync --frozen --no-dev
 - Only `.zip`, `.rar` and `.7z` filenames with recognized archive content expand.
   Documents and application packages, including Visio, remain single leaf rows.
   Raw archives renamed `.bin` also remain leaves.
-- All headers and tool-authored `scan_status` text are English. File names,
+- All headers, type groups/subgroups, flags, inspection states and other
+  tool-authored report values are English. File names,
   paths and original diagnostics retain their original text. Columns run from
   hierarchy and adjacent names through types, sizes, duplicates, flags, dates
   and inspection details; advanced filesystem fields come last. File sizes use
@@ -71,7 +72,7 @@ uv sync --frozen --no-dev
   (no inventoried files), `deny.deny` (access denied), `password.password`,
   `corrupt.corrupt`, `limit.limit` or `error.error`. No marker file is created.
   Failed locations stay in the hierarchy as parents of their marker; original
-  full paths, errors and known sizes remain. Virtual hash/extension are blank.
+  relative paths, errors and known sizes remain. Virtual hash/extension are blank.
   Errors and unreadable folders still produce PARTIAL.
 - `Extension` filters recognizable package-cache version/ABI suffixes,
   generated numeric timestamps and suffixes longer than 64 characters.
@@ -100,7 +101,12 @@ uv sync --frozen --no-dev
   differences from older reports are expected. Literal `_xNNNN_` names and
   carriage returns are preserved correctly in Excel. Some third-party readers
   may expose OOXML escape sequences in these unusual strings.
-- Column widths use 5 character units throughout. The inventory freezes rows
+- The full selected folder path appears once above the inventory. `Relative path`
+  is relative to that folder; `::` separates archive members. Virtual rows retain
+  the original failed location. `scan_status` also records the selected root and
+  uses relative diagnostic paths.
+- Inventory columns use 5 character units and 70% zoom. `scan_status` uses
+  readable widths for parameters, values and errors. The inventory freezes rows
   1-6 at A7; no columns are frozen. `dax_reference!A1` contains the supplied DAX
   frequency-list measure as literal text. Copy its text from the formula bar and
   edit the first SELECTCOLUMNS line for your model's table and column.

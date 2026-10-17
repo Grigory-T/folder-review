@@ -251,13 +251,13 @@ BOM_SIGNATURES = (
     (b"\xff\xfe", "UTF-16 LE"),
     (b"\xfe\xff", "UTF-16 BE"),
 )
-BOM_NOT_PRESENT = "нет"
-INTEGRITY_VERIFIED = "проверена"
-INTEGRITY_NOT_VERIFIED = "не проверена"
-INTEGRITY_ERROR = "ошибка"
+BOM_NOT_PRESENT = "None"
+INTEGRITY_VERIFIED = "Verified"
+INTEGRITY_NOT_VERIFIED = "Not verified"
+INTEGRITY_ERROR = "Failed"
 
-YES = "да"
-NO = "нет"
+YES = "Yes"
+NO = "No"
 
 WINDOWS_FILE_ATTRIBUTES = (
     (0x00000001, "READONLY"),
@@ -324,7 +324,7 @@ class PhysicalFile:
     levels: tuple[str, ...]
     size: int
     properties: FileProperties | None = None
-    item_type: str = "Файл"
+    item_type: str = "File"
     link_type: str | None = None
     link_target: str | None = None
     inspect_content: bool = True
@@ -793,13 +793,13 @@ def raw_extension_of(name: str) -> str:
 
 
 VIRTUAL_MARKERS = {
-    "empty": ("dummy.dummy", "Нет файловых строк"),
-    "denied": ("deny.deny", "Нет доступа"),
-    "password": ("password.password", "Требуется пароль"),
-    "corrupt": ("corrupt.corrupt", "Ошибка целостности"),
-    "limit": ("limit.limit", "Лимит инспекции"),
-    "error": ("error.error", "Ошибка инспекции"),
-    "uninspected": ("error.error", "Не прочитано"),
+    "empty": ("dummy.dummy", "No inventoried files"),
+    "denied": ("deny.deny", "Access denied"),
+    "password": ("password.password", "Password required"),
+    "corrupt": ("corrupt.corrupt", "Integrity error"),
+    "limit": ("limit.limit", "Inspection limit"),
+    "error": ("error.error", "Inspection error"),
+    "uninspected": ("error.error", "Not inspected"),
 }
 
 
@@ -842,6 +842,22 @@ def problem_kind(error: str) -> str:
     return "error"
 
 
+def report_relative_path(path: str, root_folder: str) -> str:
+    """Render locations without resolving paths or contacting a filesystem.
+
+    Only the physical path is relativized; archive member chains are retained.
+    Windows roots use Windows path rules even in cross-platform report tests.
+    """
+    physical, separator, members = path.partition("::")
+    path_module = ntpath if ntpath.splitdrive(root_folder)[0] else os.path
+    try:
+        relative = path_module.relpath(physical, root_folder)
+    except ValueError:
+        # An external diagnostic may refer to another drive; keep that evidence.
+        relative = physical
+    return relative + separator + members
+
+
 def display_row(row: ResultRow) -> ResultRow:
     """Keep failed locations in hierarchy with a clearly virtual marker leaf."""
     if row.is_virtual or not row.error or row.content_hash is not None:
@@ -855,7 +871,7 @@ def display_row(row: ResultRow) -> ResultRow:
         extension="",
         content_hash=None,
         virtual_reason=reason,
-        item_type="Виртуальная строка",
+        item_type="Virtual row",
     )
 
 
@@ -863,147 +879,147 @@ def display_row(row: ResultRow) -> ResultRow:
 # Fixed lists keep Windows/Python/EXE classification independent of OS registry.
 _EXTENSION_GROUPS = (
     (
-        "Документы",
-        "Текстовые документы",
+        "Documents",
+        "Text documents",
         "doc docx docm dot dotx dotm odt ott rtf pages wpd chm",
     ),
-    ("Документы", "Таблицы", "xls xlsx xlsm xlsb xlt xltx xltm xlc ods ots numbers"),
-    ("Документы", "Презентации", "ppt pptx pptm potx potm pps ppsx ppsm odp otp"),
-    ("Документы", "PDF и печатные документы", "pdf xps oxps ps eps"),
-    ("Документы", "Электронные книги", "epub mobi azw azw3 fb2 djvu djv"),
+    ("Documents", "Spreadsheets", "xls xlsx xlsm xlsb xlt xltx xltm xlc ods ots numbers"),
+    ("Documents", "Presentations", "ppt pptx pptm potx potm pps ppsx ppsm odp otp"),
+    ("Documents", "PDF and print documents", "pdf xps oxps ps eps"),
+    ("Documents", "E-books", "epub mobi azw azw3 fb2 djvu djv"),
     (
-        "Документы",
-        "Обычный текст и разметка",
+        "Documents",
+        "Text and markup",
         "txt text md markdown rst adoc tex nfo man 1 2 3 4 5 6 7 8 9",
     ),
-    ("Документы", "Почта и календарь", "eml msg mbox pst ost ics vcf oft"),
+    ("Documents", "Email and calendars", "eml msg mbox pst ost ics vcf oft"),
     (
-        "Изображения",
-        "Растровые изображения",
+        "Images",
+        "Raster images",
         "jpg jpeg jpe png gif bmp dib tif tiff webp heic heif avif ico cur psd xcf xbm xpm ppm pgm pbm pnm icns",
     ),
-    ("Изображения", "Векторные изображения", "svg svgz ai emf wmf cdr"),
-    ("Изображения", "Фотографии RAW", "raw cr2 cr3 nef nrw arw dng raf orf rw2 pef"),
+    ("Images", "Vector images", "svg svgz ai emf wmf cdr"),
+    ("Images", "RAW photographs", "raw cr2 cr3 nef nrw arw dng raf orf rw2 pef"),
     (
-        "Аудио",
-        "Аудиозаписи",
+        "Audio",
+        "Audio recordings",
         "mp3 wav flac aac m4a ogg oga opus wma aiff aif ape alac amr",
     ),
-    ("Аудио", "Музыка и списки воспроизведения", "mid midi kar m3u m3u8 pls cue"),
+    ("Audio", "Music and playlists", "mid midi kar m3u m3u8 pls cue"),
     (
-        "Видео",
-        "Видеозаписи",
+        "Video",
+        "Video recordings",
         "mp4 m4v mkv avi mov qt webm wmv mpg mpeg m2v m2ts vob flv 3gp",
     ),
-    ("Видео", "Субтитры", "srt ass ssa vtt sub"),
-    ("Архивы и образы", "Архивы", "zip rar 7z tar cab cpio ar lzh lha ace"),
-    ("Архивы и образы", "Сжатые файлы", "gz bz2 xz zst zstd lz lzma br z tgz tbz2 txz"),
+    ("Video", "Subtitles", "srt ass ssa vtt sub"),
+    ("Archives and disk images", "Archives", "zip rar 7z tar cab cpio ar lzh lha ace"),
+    ("Archives and disk images", "Compressed files", "gz bz2 xz zst zstd lz lzma br z tgz tbz2 txz"),
     (
-        "Архивы и образы",
-        "Образы дисков",
+        "Archives and disk images",
+        "Disk images",
         "iso img vhd vhdx vmdk vdi qcow qcow2 dmg wim esd",
     ),
     (
-        "Программы и код",
-        "Программы и библиотеки",
+        "Software and code",
+        "Programs and libraries",
         "exe dll sys ocx cpl scr com so dylib pyd wasm lib a node class pyc pyo",
     ),
     (
-        "Программы и код",
-        "Пакеты и установщики",
+        "Software and code",
+        "Packages and installers",
         "msi msp msix appx msixbundle appxbundle whl egg deb rpm apk aab ipa nupkg vsix crx xpi asar jar war ear",
     ),
     (
-        "Программы и код",
-        "Исходный код и сценарии",
+        "Software and code",
+        "Source code and scripts",
         "py pyw js mjs cjs ts tsx jsx c cc cpp cxx h hh hpp cs java go rs rb php pl pm sh bash zsh fish bat cmd ps1 psm1 psd1 vbs vbe bas vb sql lua r swift kt kts dart scala groovy f f90 pas asm s cts tcl tk tm csh tcsh nu xsh pyx pxd pxi pyf f95 f03 f08 for f77 coffee idl sct pys",
     ),
     (
-        "Программы и код",
-        "Сборка и метаданные пакетов",
+        "Software and code",
+        "Build and package metadata",
         "make cmake sln csproj vbproj vcxproj gradle nuspec nuspectemplate ninja nmake gyp gypi pc def nsi nsh wxs wixproj vc rc res",
     ),
     (
-        "Программы и код",
-        "Веб-страницы и стили",
+        "Software and code",
+        "Web pages and styles",
         "html htm xhtml css scss sass less asp aspx jsp vue svelte jspf jspx tag tld",
     ),
     (
-        "Данные и настройки",
-        "Табличные данные",
+        "Data and settings",
+        "Tabular data",
         "csv tsv parquet arrow feather avro orc tab",
     ),
     (
-        "Данные и настройки",
-        "Структурированные данные",
+        "Data and settings",
+        "Structured data",
         "json jsonl ndjson xml rdf ttl yaml yml pb binarypb msgpack cbor bson pkl pickle dtd webmanifest",
     ),
     (
-        "Данные и настройки",
-        "Базы данных",
+        "Data and settings",
+        "Databases",
         "db sqlite sqlite3 db3 mdb accdb dbf odb db-journal db-wal db-shm ldb",
     ),
     (
-        "Данные и настройки",
-        "Настройки",
+        "Data and settings",
+        "Settings",
         "ini cfg conf config cnf properties env reg desktop service socket target policy plist manifest jupyterlab-workspace toml mplstyle defaults opts",
     ),
     (
-        "Проектирование",
-        "Схемы и диаграммы",
+        "Design and engineering",
+        "Diagrams",
         "vsd vsdx vsdm vss vssx vssm vst vstx vstm drawio dia plantuml puml mmd",
     ),
     (
-        "Проектирование",
-        "Чертежи CAD",
+        "Design and engineering",
+        "CAD drawings",
         "dwg dxf dgn rvt rfa rft ifc fcstd sldprt sldasm slddrw ipt iam idw step stp iges igs",
     ),
-    ("Проектирование", "3D-модели", "stl fbx blend gltf glb 3ds dae skp max"),
-    ("Шрифты", "Файлы шрифтов", "ttf otf ttc woff woff2 eot pfb pfm afm bdf pcf cff"),
+    ("Design and engineering", "3D models", "stl fbx blend gltf glb 3ds dae skp max"),
+    ("Fonts", "Font files", "ttf otf ttc woff woff2 eot pfb pfm afm bdf pcf cff"),
     (
-        "Системные и служебные",
-        "Сертификаты и ключи",
+        "System and support files",
+        "Certificates and keys",
         "pem crt cer der pfx p12 p7b keytab pub cert certs keychain",
     ),
     (
-        "Системные и служебные",
-        "Кэш и временные файлы",
+        "System and support files",
+        "Cache and temporary files",
         "tmp temp cache dmp dump swp swo part crdownload",
     ),
-    ("Системные и служебные", "Ярлыки и ссылки", "lnk url webloc"),
-    ("Системные и служебные", "Резервные копии", "bak backup old orig sav"),
+    ("System and support files", "Shortcuts and links", "lnk url webloc"),
+    ("System and support files", "Backups", "bak backup old orig sav"),
     (
-        "Системные и служебные",
-        "Файлы блокировки и состояния",
+        "System and support files",
+        "Lock and state files",
         "lock pid state stamp tsbuildinfo fcrstate",
     ),
-    ("Документы", "Лицензии и уведомления", "license licence"),
-    ("Системные и служебные", "Журналы", "log journal"),
+    ("Documents", "Licenses and notices", "license licence"),
+    ("System and support files", "Logs", "log journal"),
     (
-        "Системные и служебные",
-        "Контрольные суммы и подписи",
+        "System and support files",
+        "Checksums and signatures",
         "sha256 sha256sum sha512 sha512sum md5 md5sum sig asc",
     ),
-    ("Программы и код", "Интерактивные блокноты", "ipynb"),
-    ("Программы и код", "Объявления типов", "pyi"),
-    ("Программы и код", "Шаблоны", "j2 jinja jinja2 tpl tmpl template in"),
-    ("Программы и код", "Локализация и переводы", "po mo xliff xlf"),
+    ("Software and code", "Interactive notebooks", "ipynb"),
+    ("Software and code", "Type declarations", "pyi"),
+    ("Software and code", "Templates", "j2 jinja jinja2 tpl tmpl template in"),
+    ("Software and code", "Localization and translations", "po mo xliff xlf"),
     (
-        "Программы и код",
-        "Схемы и описания интерфейсов",
+        "Software and code",
+        "Schemas and interface definitions",
         "xsd xsl xslt proto pdl bnf ebnf lark",
     ),
     (
-        "Данные и настройки",
-        "Научные массивы и наборы данных",
+        "Data and settings",
+        "Scientific arrays and datasets",
         "npy npz mat h5 hdf5 nc fits fit fts",
     ),
-    ("Данные и настройки", "Модели машинного обучения", "tflite onnx safetensors"),
-    ("Данные и настройки", "Захваты сетевого трафика", "pcap pcapng cap"),
-    ("Данные и настройки", "Ресурсы приложений", "pak"),
+    ("Data and settings", "Machine learning models", "tflite onnx safetensors"),
+    ("Data and settings", "Network captures", "pcap pcapng cap"),
+    ("Data and settings", "Application resources", "pak"),
     (
-        "Данные и настройки",
-        "Данные неопределенного формата",
+        "Data and settings",
+        "Unspecified data",
         "dat bin enc idx store pack model",
     ),
 )
@@ -1017,7 +1033,7 @@ EXTENSION_GROUPS = {
 def file_type_groups(row: ResultRow) -> tuple[str, str]:
     """Deterministic display groups; never decide whether an archive expands."""
     if row.is_virtual:
-        return "Служебные строки", VIRTUAL_MARKERS[row.virtual_reason or "empty"][1]
+        return "Virtual rows", VIRTUAL_MARKERS[row.virtual_reason or "empty"][1]
     name = row.leaf_name.casefold()
     extension = row.extension
     content = row.content_type
@@ -1047,15 +1063,15 @@ def file_type_groups(row: ResultRow) -> tuple[str, str]:
         "requirements.txt",
         "environment.yml",
     }:
-        return "Программы и код", "Сборка и метаданные пакетов"
+        return "Software and code", "Build and package metadata"
     if name in {"sha256sums", "sha512sums", "md5sums", "checksums"}:
-        return "Системные и служебные", "Контрольные суммы и подписи"
+        return "System and support files", "Checksums and signatures"
     if name in {"thumbs.db", "ehthumbs.db", ".ds_store"} or re.fullmatch(
         r"(?:thumbcache|iconcache)_[^.]+\.db", name
     ):
-        return "Системные и служебные", "Кэш и временные файлы"
+        return "System and support files", "Cache and temporary files"
     if name == "py.typed" or name.endswith((".d.ts", ".d.cts", ".d.mts")):
-        return "Программы и код", "Объявления типов"
+        return "Software and code", "Type declarations"
     if name in {
         ".gitignore",
         ".gitattributes",
@@ -1066,9 +1082,9 @@ def file_type_groups(row: ResultRow) -> tuple[str, str]:
         ".npmrc",
         ".yarnrc",
     }:
-        return "Данные и настройки", "Настройки"
+        return "Data and settings", "Settings"
     if name in {".lock", ".pid"}:
-        return "Системные и служебные", "Файлы блокировки и состояния"
+        return "System and support files", "Lock and state files"
     if name.endswith(
         (
             ".js.map",
@@ -1080,41 +1096,41 @@ def file_type_groups(row: ResultRow) -> tuple[str, str]:
             ".jsx.map",
         )
     ):
-        return "Программы и код", "Отладка и карты исходного кода"
+        return "Software and code", "Debug information and source maps"
     if re.match(r"^(?:license|licence|copying|notice)(?:[._-]|$)", name):
-        return "Документы", "Лицензии и уведомления"
+        return "Documents", "Licenses and notices"
     if re.match(r"^readme(?:[._-]|$)", name):
-        return "Документы", "Обычный текст и разметка"
+        return "Documents", "Text and markup"
     if content in {"PEM private key", "PEM public key", "PEM certificate"}:
-        return "Системные и служебные", "Сертификаты и ключи"
+        return "System and support files", "Certificates and keys"
     if content == "Gettext translation catalog":
-        return "Программы и код", "Локализация и переводы"
+        return "Software and code", "Localization and translations"
     if content in {
         "COFF object file",
         "ELF executable",
         "Windows executable / DLL",
         "Mach-O binary",
     }:
-        return "Программы и код", "Программы и библиотеки"
+        return "Software and code", "Programs and libraries"
     if content == "Program database (PDB)":
-        return "Программы и код", "Отладка и карты исходного кода"
+        return "Software and code", "Debug information and source maps"
     if content == "Wavefront OBJ model":
-        return "Проектирование", "3D-модели"
+        return "Design and engineering", "3D models"
     if content == "MPEG transport stream":
-        return "Видео", "Видеозаписи"
+        return "Video", "Video recordings"
     if extension == "mts" and content.startswith("Text ("):
-        return "Программы и код", "Исходный код и сценарии"
+        return "Software and code", "Source code and scripts"
     if extension == "pot" and content.startswith("PowerPoint "):
-        return "Документы", "Презентации"
+        return "Documents", "Presentations"
     if extension == "key" and content.startswith("ZIP "):
-        return "Документы", "Презентации"
+        return "Documents", "Presentations"
     # These extensions genuinely have unrelated uses; no single blind mapping.
     if extension in {"key", "pot", "obj", "mts", "pdb", "map"}:
-        return "Прочее", "Неоднозначный формат"
+        return "Other", "Ambiguous format"
     known = EXTENSION_GROUPS.get(extension)
     if known is not None:
         return known
-    return "Прочее", "Неизвестное расширение" if extension else "Без расширения"
+    return "Other", "Unknown extension" if extension else "No extension"
 
 
 def recognized_file_role(name: str, content_type: str | None = None) -> str | None:
@@ -1216,20 +1232,20 @@ def exception_text(exc: BaseException) -> str:
 
 def item_type_from_mode(mode: int) -> str:
     if stat.S_ISREG(mode):
-        return "Файл"
+        return "File"
     if stat.S_ISDIR(mode):
-        return "Папка"
+        return "Folder"
     if stat.S_ISLNK(mode):
-        return "Символическая ссылка"
+        return "Symbolic link"
     if stat.S_ISFIFO(mode):
-        return "Именованный канал (FIFO)"
+        return "Named pipe (FIFO)"
     if stat.S_ISSOCK(mode):
-        return "Сокет"
+        return "Socket"
     if stat.S_ISCHR(mode):
-        return "Символьное устройство"
+        return "Character device"
     if stat.S_ISBLK(mode):
-        return "Блочное устройство"
-    return "Другой объект файловой системы"
+        return "Block device"
+    return "Other filesystem item"
 
 
 def file_properties(name: str, result: os.stat_result) -> FileProperties:
@@ -1313,12 +1329,12 @@ def make_row(
         leaf_name=leaf_name,
         extension="" if virtual_folder or virtual_reason else extension_of(leaf_name),
         size=size,
-        item_type=item_type or ("Файл" if properties else "Файл внутри архива"),
+        item_type=item_type or ("File" if properties else "Archive member"),
         recognized_role=recognized_file_role(leaf_name, content_type),
         link_type=link_type,
         link_target=link_target,
         content_type=content_type,
-        in_archive="да" if in_archive else "нет",
+        in_archive="Yes" if in_archive else "No",
         bom=bom,
         integrity_status=integrity_status,
         properties=properties,
@@ -1351,7 +1367,7 @@ def folder_placeholder(
         if unreadable
         else "Folder with no inventoried leaf files",
         in_archive,
-        item_type="Папка (виртуальная строка)",
+        item_type="Folder marker",
         virtual_folder=True,
         virtual_reason=reason,
     )
@@ -1687,13 +1703,13 @@ def scan_folder(
 
                     if is_junction or is_symbolic_link or is_reparse:
                         if is_junction:
-                            item_type = "Соединение каталогов (junction)"
+                            item_type = "Directory junction"
                             link_type_value = "Junction"
                         elif is_symbolic_link:
-                            item_type = "Символическая ссылка"
-                            link_type_value = "Символическая ссылка"
+                            item_type = "Symbolic link"
+                            link_type_value = "Symbolic link"
                         else:
-                            item_type = "Точка повторной обработки"
+                            item_type = "Reparse point"
                             link_type_value = "Reparse point"
                         files.append(
                             PhysicalFile(
@@ -1720,7 +1736,7 @@ def scan_folder(
                                 properties,
                                 item_type,
                                 (
-                                    "Жесткая ссылка"
+                                    "Hard link"
                                     if is_regular and stat_result.st_nlink > 1
                                     else None
                                 ),
@@ -2998,7 +3014,7 @@ def write_workbook(
     level_headers = [f"Level {index}" for index in range(1, max_level + 1)]
     all_data_headers = level_headers + [
         "Leaf depth",
-        "Full path",
+        "Relative path",
         "Name without extension",
         "File name",
         "Extension",
@@ -3065,7 +3081,7 @@ def write_workbook(
         ws = _ReportSheet(wb, "folder_review", formats)
         sheet = ws.worksheet
         sheet.hide_gridlines(2)
-        sheet.set_zoom(85)
+        sheet.set_zoom(70)
         sheet.set_tab_color("#002060")
         sheet.outline_settings(True, False, False, False)
         sheet.set_default_row(14.5)
@@ -3104,8 +3120,7 @@ def write_workbook(
         sheet.set_row(5, 72)
 
         ws.append([None])
-        root_name = os.path.basename(root_folder.rstrip("\\/")) or root_folder
-        title = f"Folder file inventory: {root_name}"
+        title = f"Folder file inventory: {root_folder}"
         ws.append(
             [None, styled_cell(ws, excel_text(title), font=title_font, force_text=True)]
         )
@@ -3195,11 +3210,11 @@ def write_workbook(
                 if row.is_virtual
                 else VIRTUAL_MARKERS[problem_kind(row.error)][1]
                 if row.error
-                else "Прочитан"
+                else "Read"
                 if row.content_hash is not None
-                else "Ссылка"
+                else "Link"
                 if row.link_type
-                else "Не хеширован"
+                else "Not hashed"
             )
             stem_name = (
                 ntpath.splitext(row.leaf_name)[0] if row.extension else row.leaf_name
@@ -3210,7 +3225,7 @@ def write_workbook(
                     for index, header in enumerate(level_headers)
                 },
                 "Leaf depth": len(row.levels),
-                "Full path": row.full_path,
+                "Relative path": report_relative_path(row.full_path, root_folder),
                 "Name without extension": stem_name,
                 "Extension": row.extension,
                 "Type group": family,
@@ -3226,7 +3241,7 @@ def write_workbook(
                 if row.content_hash is not None
                 else None,
                 "Item type": row.item_type,
-                "Virtual row": "да" if row.is_virtual else "нет",
+                "Virtual row": "Yes" if row.is_virtual else "No",
                 "Inspection state": state,
                 "Detected role": row.recognized_role,
                 "Link type": row.link_type,
@@ -3356,7 +3371,8 @@ def write_workbook(
         status.hide_gridlines(2)
         status.set_tab_color("#70AD47" if report.status == "COMPLETE" else "#FFC000")
         status.freeze_panes(1, 0)
-        status.set_column(0, 2, 5)
+        status.set_column(0, 0, 34 - 5 / 7)
+        status.set_column(1, 2, 72 - 5 / 7)
         status.set_margins(0.75, 0.75, 1, 1)
         status.set_header("", {"margin": 0.5})
         status.set_footer("", {"margin": 0.5})
@@ -3414,7 +3430,7 @@ def write_workbook(
                 (
                     "Logical file inventory: folders define the hierarchy; last is always 1. "
                     "Filter Virtual row and Inspection state to select folder/error markers. "
-                    "Full path retains the original location. Sizes use bytes and MiB (1 MiB = 1,048,576 bytes); timestamps use local time."
+                    "Relative path is relative to the selected folder shown above the inventory; :: separates archive members. Virtual paths identify the original failed location. Sizes use bytes and MiB (1 MiB = 1,048,576 bytes); timestamps use local time."
                 ),
             ),
             ("Virtual rows", sum(row.is_virtual for row in rows)),
@@ -3470,7 +3486,7 @@ def write_workbook(
             )
 
         status_ws.append([None])
-        diagnostic_headers = ("Stage", "Path", "Error")
+        diagnostic_headers = ("Stage", "Relative path", "Error")
         status_ws.append(
             [
                 styled_cell(
@@ -3514,7 +3530,7 @@ def write_workbook(
                     ),
                     styled_cell(
                         status_ws,
-                        excel_text(diagnostic.path),
+                        excel_text(report_relative_path(diagnostic.path, root_folder)),
                         font=normal_font,
                         border=border,
                         alignment={"valign": "top", "text_wrap": True},

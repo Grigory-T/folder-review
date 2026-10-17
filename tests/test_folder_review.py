@@ -108,15 +108,15 @@ class FolderReviewTests(unittest.TestCase):
                 ],
             )
             self.assertTrue(
-                all(row["last"] == 1 and row["Virtual row"] == "да" for row in records)
+                all(row["last"] == 1 and row["Virtual row"] == "Yes" for row in records)
             )
             self.assertTrue(all(row["Duplicate group"] is None for row in records))
             self.assertTrue(
-                all(row["Type group"] == "Служебные строки" for row in records)
+                all(row["Type group"] == "Virtual rows" for row in records)
             )
             self.assertEqual(
-                [row["Full path"] for row in records],
-                [row.full_path for row in rows],
+                [row["Relative path"] for row in records],
+                [folder_review.report_relative_path(row.full_path, "data") for row in rows],
             )
             self.assertEqual(records[2]["Level 1"], "encrypted.7z")
             self.assertEqual(records[2]["Level 2"], "password.password")
@@ -166,7 +166,7 @@ class FolderReviewTests(unittest.TestCase):
                 [1, 2, 1, None, None, 2, None],
             )
             self.assertTrue(
-                all(row["last"] == 1 and row["Virtual row"] == "нет" for row in records)
+                all(row["last"] == 1 and row["Virtual row"] == "No" for row in records)
             )
             self.assertEqual(
                 records[2]["File name"],
@@ -232,7 +232,7 @@ class FolderReviewTests(unittest.TestCase):
                     self.assertTrue(row[0] is None or row[0].isascii())
                     if row[0] != "Root folder" and isinstance(row[1], str):
                         self.assertTrue(row[1].isascii())
-                self.assertIn(("Stage", "Path", "Error"), status)
+                self.assertIn(("Stage", "Relative path", "Error"), status)
             finally:
                 book.close()
 
@@ -256,20 +256,20 @@ class FolderReviewTests(unittest.TestCase):
         self,
     ) -> None:
         cases = {
-            "book.xlsx": ("Документы", "Таблицы"),
-            "drawing.vsdx": ("Проектирование", "Схемы и диаграммы"),
-            "photo.png": ("Изображения", "Растровые изображения"),
-            "film.mp4": ("Видео", "Видеозаписи"),
-            "archive.tar.gz": ("Архивы и образы", "Сжатые файлы"),
-            "script.py": ("Программы и код", "Исходный код и сценарии"),
-            "package.whl": ("Программы и код", "Пакеты и установщики"),
-            "table.csv": ("Данные и настройки", "Табличные данные"),
-            "data.json": ("Данные и настройки", "Структурированные данные"),
-            "backup.bak": ("Системные и служебные", "Резервные копии"),
-            "plain": ("Прочее", "Без расширения"),
-            "data.unusual-suffix": ("Прочее", "Неизвестное расширение"),
-            ".env": ("Данные и настройки", "Настройки"),
-            "Makefile": ("Программы и код", "Сборка и метаданные пакетов"),
+            "book.xlsx": ("Documents", "Spreadsheets"),
+            "drawing.vsdx": ("Design and engineering", "Diagrams"),
+            "photo.png": ("Images", "Raster images"),
+            "film.mp4": ("Video", "Video recordings"),
+            "archive.tar.gz": ("Archives and disk images", "Compressed files"),
+            "script.py": ("Software and code", "Source code and scripts"),
+            "package.whl": ("Software and code", "Packages and installers"),
+            "table.csv": ("Data and settings", "Tabular data"),
+            "data.json": ("Data and settings", "Structured data"),
+            "backup.bak": ("System and support files", "Backups"),
+            "plain": ("Other", "No extension"),
+            "data.unusual-suffix": ("Other", "Unknown extension"),
+            ".env": ("Data and settings", "Settings"),
+            "Makefile": ("Software and code", "Build and package metadata"),
         }
         for name, expected in cases.items():
             row = folder_review.make_row(
@@ -287,49 +287,49 @@ class FolderReviewTests(unittest.TestCase):
 
     def test_expanded_grouping_and_exact_filename_precedence(self) -> None:
         cases = {
-            "CMakeLists.txt": ("Программы и код", "Сборка и метаданные пакетов"),
-            "meson.build": ("Программы и код", "Сборка и метаданные пакетов"),
-            "MANIFEST.in": ("Программы и код", "Сборка и метаданные пакетов"),
-            "pyproject.toml": ("Программы и код", "Сборка и метаданные пакетов"),
-            "settings.toml": ("Данные и настройки", "Настройки"),
-            "py.typed": ("Программы и код", "Объявления типов"),
-            "index.d.mts": ("Программы и код", "Объявления типов"),
-            "index.d.cts": ("Программы и код", "Объявления типов"),
-            "index.d.ts": ("Программы и код", "Объявления типов"),
-            "file.pyi": ("Программы и код", "Объявления типов"),
-            "app.js.map": ("Программы и код", "Отладка и карты исходного кода"),
-            "style.css.map": ("Программы и код", "Отладка и карты исходного кода"),
-            "readme.js.map": ("Программы и код", "Отладка и карты исходного кода"),
-            "license.css.map": ("Программы и код", "Отладка и карты исходного кода"),
-            "module.cts": ("Программы и код", "Исходный код и сценарии"),
-            "module.tcl": ("Программы и код", "Исходный код и сценарии"),
-            "module.pyx": ("Программы и код", "Исходный код и сценарии"),
-            "module.pxd": ("Программы и код", "Исходный код и сценарии"),
-            "code.class": ("Программы и код", "Программы и библиотеки"),
-            "code.pyc": ("Программы и код", "Программы и библиотеки"),
-            "code.lib": ("Программы и код", "Программы и библиотеки"),
-            "addon.node": ("Программы и код", "Программы и библиотеки"),
-            "app.jar": ("Программы и код", "Пакеты и установщики"),
-            "app.war": ("Программы и код", "Пакеты и установщики"),
-            "index.j2": ("Программы и код", "Шаблоны"),
-            "locale.mo": ("Программы и код", "Локализация и переводы"),
-            "style.mplstyle": ("Данные и настройки", "Настройки"),
-            "data.msgpack": ("Данные и настройки", "Структурированные данные"),
-            "data.npz": ("Данные и настройки", "Научные массивы и наборы данных"),
-            "sky.fits": ("Данные и настройки", "Научные массивы и наборы данных"),
-            "network.pcapng": ("Данные и настройки", "Захваты сетевого трафика"),
-            "weights.tflite": ("Данные и настройки", "Модели машинного обучения"),
-            "assets.pak": ("Данные и настройки", "Ресурсы приложений"),
-            "data.dat": ("Данные и настройки", "Данные неопределенного формата"),
-            "secret.enc": ("Данные и настройки", "Данные неопределенного формата"),
-            "LICENSE.python": ("Документы", "Лицензии и уведомления"),
-            "README.md": ("Документы", "Обычный текст и разметка"),
-            "server.log": ("Системные и служебные", "Журналы"),
+            "CMakeLists.txt": ("Software and code", "Build and package metadata"),
+            "meson.build": ("Software and code", "Build and package metadata"),
+            "MANIFEST.in": ("Software and code", "Build and package metadata"),
+            "pyproject.toml": ("Software and code", "Build and package metadata"),
+            "settings.toml": ("Data and settings", "Settings"),
+            "py.typed": ("Software and code", "Type declarations"),
+            "index.d.mts": ("Software and code", "Type declarations"),
+            "index.d.cts": ("Software and code", "Type declarations"),
+            "index.d.ts": ("Software and code", "Type declarations"),
+            "file.pyi": ("Software and code", "Type declarations"),
+            "app.js.map": ("Software and code", "Debug information and source maps"),
+            "style.css.map": ("Software and code", "Debug information and source maps"),
+            "readme.js.map": ("Software and code", "Debug information and source maps"),
+            "license.css.map": ("Software and code", "Debug information and source maps"),
+            "module.cts": ("Software and code", "Source code and scripts"),
+            "module.tcl": ("Software and code", "Source code and scripts"),
+            "module.pyx": ("Software and code", "Source code and scripts"),
+            "module.pxd": ("Software and code", "Source code and scripts"),
+            "code.class": ("Software and code", "Programs and libraries"),
+            "code.pyc": ("Software and code", "Programs and libraries"),
+            "code.lib": ("Software and code", "Programs and libraries"),
+            "addon.node": ("Software and code", "Programs and libraries"),
+            "app.jar": ("Software and code", "Packages and installers"),
+            "app.war": ("Software and code", "Packages and installers"),
+            "index.j2": ("Software and code", "Templates"),
+            "locale.mo": ("Software and code", "Localization and translations"),
+            "style.mplstyle": ("Data and settings", "Settings"),
+            "data.msgpack": ("Data and settings", "Structured data"),
+            "data.npz": ("Data and settings", "Scientific arrays and datasets"),
+            "sky.fits": ("Data and settings", "Scientific arrays and datasets"),
+            "network.pcapng": ("Data and settings", "Network captures"),
+            "weights.tflite": ("Data and settings", "Machine learning models"),
+            "assets.pak": ("Data and settings", "Application resources"),
+            "data.dat": ("Data and settings", "Unspecified data"),
+            "secret.enc": ("Data and settings", "Unspecified data"),
+            "LICENSE.python": ("Documents", "Licenses and notices"),
+            "README.md": ("Documents", "Text and markup"),
+            "server.log": ("System and support files", "Logs"),
             "SHA256SUMS.sha256": (
-                "Системные и служебные",
-                "Контрольные суммы и подписи",
+                "System and support files",
+                "Checksums and signatures",
             ),
-            ".lock": ("Системные и служебные", "Файлы блокировки и состояния"),
+            ".lock": ("System and support files", "Lock and state files"),
         }
         for name, expected in cases.items():
             with self.subTest(name=name):
@@ -340,7 +340,7 @@ class FolderReviewTests(unittest.TestCase):
                 "file." + extension, ("file." + extension,), 0, "Unknown binary", False
             )
             self.assertEqual(
-                folder_review.file_type_groups(row), ("Прочее", "Неоднозначный формат")
+                folder_review.file_type_groups(row), ("Other", "Ambiguous format")
             )
 
     def grouping_payloads(self):
@@ -349,46 +349,46 @@ class FolderReviewTests(unittest.TestCase):
         return {
             "test.key": (
                 b"-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n",
-                ("Системные и служебные", "Сертификаты и ключи"),
+                ("System and support files", "Certificates and keys"),
             ),
             "messages.pot": (
                 b'# translation template\nmsgid ""\nmsgstr ""\n',
-                ("Программы и код", "Локализация и переводы"),
+                ("Software and code", "Localization and translations"),
             ),
-            "code.obj": (obj, ("Программы и код", "Программы и библиотеки")),
+            "code.obj": (obj, ("Software and code", "Programs and libraries")),
             "mesh.obj": (
                 b"v 0 0 0\nv 1 1 1\nf 1 2 3\n",
-                ("Проектирование", "3D-модели"),
+                ("Design and engineering", "3D models"),
             ),
             "index.mts": (
                 b"export const value = 1;\n",
-                ("Программы и код", "Исходный код и сценарии"),
+                ("Software and code", "Source code and scripts"),
             ),
-            "film.mts": (ts * 3, ("Видео", "Видеозаписи")),
-            "film.ts": (ts * 3, ("Видео", "Видеозаписи")),
+            "film.mts": (ts * 3, ("Video", "Video recordings")),
+            "film.ts": (ts * 3, ("Video", "Video recordings")),
             "debug.pdb": (
                 b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\x00\x00\x00" + bytes(64),
-                ("Программы и код", "Отладка и карты исходного кода"),
+                ("Software and code", "Debug information and source maps"),
             ),
             "native.bare": (
                 b"\x7fELF" + bytes(64),
-                ("Программы и код", "Программы и библиотеки"),
+                ("Software and code", "Programs and libraries"),
             ),
             "native.unknown": (
                 b"\xcf\xfa\xed\xfe" + bytes(64),
-                ("Программы и код", "Программы и библиотеки"),
+                ("Software and code", "Programs and libraries"),
             ),
             "CMakeLists.txt": (
                 b"project(example)\n",
-                ("Программы и код", "Сборка и метаданные пакетов"),
+                ("Software and code", "Build and package metadata"),
             ),
             "app.js.map": (
                 b'{"version":3,"sources":[]}',
-                ("Программы и код", "Отладка и карты исходного кода"),
+                ("Software and code", "Debug information and source maps"),
             ),
             "license.js.map": (
                 b'{"version":3,"sources":[]}',
-                ("Программы и код", "Отладка и карты исходного кода"),
+                ("Software and code", "Debug information and source maps"),
             ),
         }
 
@@ -443,22 +443,22 @@ class FolderReviewTests(unittest.TestCase):
             content = folder_review.member_content_type(data, name)
             row = folder_review.make_row(name, (name,), len(data), content, False)
             expected = (
-                ("Программы и код", "Исходный код и сценарии")
+                ("Software and code", "Source code and scripts")
                 if name.endswith(".mts")
-                else ("Прочее", "Неоднозначный формат")
+                else ("Other", "Ambiguous format")
             )
             self.assertEqual(folder_review.file_type_groups(row), expected)
         row = folder_review.make_row(
             "slides.pot", ("slides.pot",), 0, "PowerPoint presentation (PPT)", False
         )
         self.assertEqual(
-            folder_review.file_type_groups(row), ("Документы", "Презентации")
+            folder_review.file_type_groups(row), ("Documents", "Presentations")
         )
         row = folder_review.make_row(
             "slides.key", ("slides.key",), 0, "ZIP container (leaf file)", False
         )
         self.assertEqual(
-            folder_review.file_type_groups(row), ("Документы", "Презентации")
+            folder_review.file_type_groups(row), ("Documents", "Presentations")
         )
 
     def test_fingerprints_match_physical_zip_7z_and_nested_content(self) -> None:
@@ -602,7 +602,7 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual({row.levels[-2] for row in markers}, {"empty", "other"})
             self.assertTrue(
                 all(
-                    row.content_hash is None and row.in_archive == "да"
+                    row.content_hash is None and row.in_archive == "Yes"
                     for row in markers
                 )
             )
@@ -839,7 +839,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(workbook_row.content_type, "Excel workbook (XLSX)")
         self.assertEqual(bom_row.bom, "UTF-16 LE")
         self.assertEqual(bom_row.integrity_status, folder_review.INTEGRITY_VERIFIED)
-        self.assertEqual(bom_row.item_type, "Файл внутри архива")
+        self.assertEqual(bom_row.item_type, "Archive member")
         self.assertIsNone(bom_row.properties)
         self.assertFalse(
             any(row.leaf_name in {"middle.7z", "inner.zip"} for row in rows)
@@ -881,7 +881,7 @@ class FolderReviewTests(unittest.TestCase):
 
         self.assertEqual([row.leaf_name for row in rows], ["archive.bin"])
         self.assertEqual(rows[0].content_type, "ZIP container (leaf file)")
-        self.assertFalse(rows[0].in_archive == "да")
+        self.assertFalse(rows[0].in_archive == "Yes")
         self.assertIsNone(rows[0].error)
 
     def test_ordinary_zip_with_office_like_folder_is_expanded(self) -> None:
@@ -1356,7 +1356,7 @@ class FolderReviewTests(unittest.TestCase):
             values = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
             columns = {header: index for index, header in enumerate(headers) if header}
             requested_headers = {
-                "Full path",
+                "Relative path",
                 "Name without extension",
                 "Extension",
                 "File name",
@@ -1400,11 +1400,11 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual(values[columns["Name without extension"]], "leaf")
             self.assertEqual(values[columns["File name"]], "leaf.pdf")
             self.assertEqual(values[columns["Detected content type"]], "PDF")
-            self.assertEqual(values[columns["Inside archive"]], "нет")
-            self.assertEqual(values[columns["BOM"]], "нет")
+            self.assertEqual(values[columns["Inside archive"]], "No")
+            self.assertEqual(values[columns["BOM"]], "None")
             self.assertIsNone(values[columns["Integrity status"]])
-            self.assertEqual(values[columns["Item type"]], "Файл")
-            self.assertEqual(values[columns["Hidden"]], "нет")
+            self.assertEqual(values[columns["Item type"]], "File")
+            self.assertEqual(values[columns["Hidden"]], "No")
             self.assertEqual(values[columns["Permissions"]], properties.permissions)
             self.assertEqual(values[columns["Mode (st_mode)"]], properties.mode)
             self.assertEqual(values[columns["File ID (st_ino)"]], properties.inode)
@@ -1435,7 +1435,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(rows[0].bom, "UTF-8")
         self.assertEqual(rows[0].content_type, "Text (UTF-8 BOM)")
         self.assertIsNotNone(rows[0].properties)
-        self.assertEqual(rows[0].item_type, "Файл")
+        self.assertEqual(rows[0].item_type, "File")
         self.assertIsNone(rows[0].link_type)
         self.assertEqual(rows[0].properties.mode, source.stat().st_mode)
         self.assertTrue(rows[0].properties.permissions.startswith("-"))
@@ -1489,14 +1489,14 @@ class FolderReviewTests(unittest.TestCase):
         by_name = {row.leaf_name: row for row in rows}
 
         self.assertEqual(stats.skipped_entries, 0)
-        self.assertEqual(by_name["file-link"].item_type, "Символическая ссылка")
-        self.assertEqual(by_name["file-link"].link_type, "Символическая ссылка")
+        self.assertEqual(by_name["file-link"].item_type, "Symbolic link")
+        self.assertEqual(by_name["file-link"].link_type, "Symbolic link")
         self.assertEqual(by_name["file-link"].link_target, target_file.name)
         self.assertEqual(
             by_name["folder-link"].content_type,
             "Filesystem link (not followed)",
         )
-        self.assertEqual(by_name["events.fifo"].item_type, "Именованный канал (FIFO)")
+        self.assertEqual(by_name["events.fifo"].item_type, "Named pipe (FIFO)")
         self.assertEqual(
             by_name["events.fifo"].content_type,
             "Special filesystem item (not read)",
@@ -1527,7 +1527,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(stats.skipped_entries, 0)
         self.assertEqual(
             by_name["folder-junction"].item_type,
-            "Соединение каталогов (junction)",
+            "Directory junction",
         )
         self.assertEqual(by_name["folder-junction"].link_type, "Junction")
         self.assertTrue(by_name["folder-junction"].link_target)
@@ -1546,7 +1546,7 @@ class FolderReviewTests(unittest.TestCase):
         rows = folder_review.inspect_files(files, workers=2)
 
         self.assertEqual(len(rows), 2)
-        self.assertTrue(all(row.link_type == "Жесткая ссылка" for row in rows))
+        self.assertTrue(all(row.link_type == "Hard link" for row in rows))
         self.assertTrue(all(row.properties.links == 2 for row in rows))
 
     def test_windows_attribute_names(self) -> None:
@@ -1643,7 +1643,7 @@ class FolderReviewTests(unittest.TestCase):
             by_name["shortcut.lnk"].recognized_role,
             "Windows shortcut",
         )
-        self.assertTrue(all(row.in_archive == "да" for row in rows))
+        self.assertTrue(all(row.in_archive == "Yes" for row in rows))
 
     def test_all_supported_bom_variants(self) -> None:
         cases = {
@@ -1717,7 +1717,7 @@ class FolderReviewTests(unittest.TestCase):
                 any(
                     len(row) >= 3
                     and row[0] == "folder enumeration"
-                    and row[1] == str(input_root / "unavailable")
+                    and row[1] == "unavailable"
                     and "PermissionError" in row[2]
                     for row in values
                 )
@@ -1770,7 +1770,7 @@ class FolderReviewTests(unittest.TestCase):
                 any(
                     len(row) >= 3
                     and row[0] == "row limit"
-                    and row[1] == str(input_root)
+                    and row[1] == "."
                     and "1 physical items omitted" in row[2]
                     for row in status_values
                 )
@@ -1824,7 +1824,10 @@ class FolderReviewTests(unittest.TestCase):
                 book.sheetnames, ["folder_review", "scan_status", "dax_reference"]
             )
             self.assertEqual(book["folder_review"].freeze_panes, "A7")
-            for sheet in book:
+            self.assertEqual(book["folder_review"].sheet_view.zoomScale, 70)
+            self.assertGreater(book["scan_status"].column_dimensions["A"].width, 30)
+            self.assertGreater(book["scan_status"].column_dimensions["B"].width, 60)
+            for sheet in (book["folder_review"], book["dax_reference"]):
                 self.assertTrue(
                     all(
                         abs(dim.width - 5.7109375) < 0.01
@@ -1836,6 +1839,59 @@ class FolderReviewTests(unittest.TestCase):
             self.assertEqual(cell.data_type, "s")
             self.assertEqual(cell.value.count("'Data'[TextColumn]"), 1)
             self.assertTrue(cell.value.startswith("=VAR Source"))
+        finally:
+            book.close()
+
+    def test_relative_report_paths_preserve_archive_members_and_source_names(self) -> None:
+        cases = (
+            ("/data/пример/文件.txt", "/data/пример", "文件.txt"),
+            ("/data/a.zip::папка/b.7z::文件.txt", "/data", "a.zip::папка/b.7z::文件.txt"),
+            ("/data/empty", "/data", "empty"),
+            ("/data", "/data", "."),
+            ("/file.txt", "/", "file.txt"),
+            (r"C:\Data\папка\文件.txt", r"c:\data", r"папка\文件.txt"),
+            (r"C:\Data\a.zip::папка/b.txt", r"C:\Data", "a.zip::папка/b.txt"),
+            ("C:\\file.txt", "C:\\", "file.txt"),
+            (r"\\server\share\папка\文件.txt", r"\\server\share", r"папка\文件.txt"),
+            (r"D:\external.txt", r"C:\Data", r"D:\external.txt"),
+        )
+        for path, root, expected in cases:
+            with self.subTest(path=path, root=root):
+                self.assertEqual(folder_review.report_relative_path(path, root), expected)
+
+    def test_report_technical_values_are_english_and_root_is_only_in_title(self) -> None:
+        root = self.root / "пример"
+        root.mkdir()
+        source = root / "文件.txt"
+        source.write_bytes(b"content")
+        rows = [replace(folder_review.make_row(
+            str(source), (source.name,), 7, "Text", False,
+            properties=folder_review.file_properties(source.name, source.stat()),
+            bom=folder_review.BOM_NOT_PRESENT,
+        ), content_hash=blake3(b"content").digest()),
+            folder_review.folder_placeholder(str(root / "пусто"), ("пусто",), in_archive=False)]
+        output = self.root / "english.xlsx"
+        folder_review.write_workbook(rows, output, str(root), full_metadata=True)
+        book = load_workbook(output)
+        try:
+            sheet = book["folder_review"]
+            self.assertEqual(sheet["B2"].value, f"Folder file inventory: {root}")
+            self.assertEqual(sum(str(root) in str(cell.value) for row in sheet for cell in row), 1)
+            headers = [cell.value for cell in sheet[6]]
+            records = [dict(zip(headers, row)) for row in sheet.iter_rows(min_row=7, values_only=True)]
+            self.assertNotIn("Full path", headers)
+            self.assertEqual(records[0]["Relative path"], "文件.txt")
+            self.assertEqual(records[0]["File name"], "文件.txt")
+            self.assertEqual(records[1]["Relative path"], "пусто")
+            self.assertEqual(records[1]["Inspection state"], "No inventoried files")
+            source_columns = {None, "Relative path", "File name", "Name without extension", "Level 1"}
+            for record in records:
+                for header, value in record.items():
+                    if header not in source_columns and isinstance(value, str):
+                        self.assertTrue(value.isascii(), (header, value))
+            self.assertEqual(folder_review.INTEGRITY_VERIFIED, "Verified")
+            self.assertEqual(folder_review.INTEGRITY_NOT_VERIFIED, "Not verified")
+            self.assertEqual(folder_review.INTEGRITY_ERROR, "Failed")
         finally:
             book.close()
 
@@ -2149,7 +2205,7 @@ class FolderReviewTests(unittest.TestCase):
             values = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
             self.assertIn("UTF-8", values)
             self.assertTrue(
-                any(isinstance(value, str) and len(value) > 260 for value in values)
+                any(isinstance(value, str) and len(value) > 260 for value in [sheet["B2"].value, *values])
             )
         finally:
             workbook.close()
