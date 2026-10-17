@@ -2046,6 +2046,18 @@ class FolderReviewTests(unittest.TestCase):
         self.assertIn("GNU LESSER GENERAL PUBLIC LICENSE", text)
         self.assertIn("7-Zip 26.04", text)
 
+    def test_frozen_runtime_must_be_local(self) -> None:
+        with (
+            mock.patch.object(folder_review.sys, "frozen", True, create=True),
+            mock.patch.object(
+                folder_review.sys, "_MEIPASS", str(self.root), create=True
+            ),
+            mock.patch.object(folder_review, "local_storage", return_value=False),
+            self.assertRaisesRegex(ValueError, "runtime must use local storage"),
+            folder_review.safe_runtime(str(self.root), self.root / "report.xlsx"),
+        ):
+            self.fail("A remote unpacked runtime was accepted")
+
     def test_network_apis_are_denied_before_and_after_review(self) -> None:
         import socket
         import urllib.request

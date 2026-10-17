@@ -123,7 +123,8 @@ uv sync --frozen --no-dev
   outside the inspected tree. Input and report output may use SMB. URLs, WebDAV and known other network
   filesystems are rejected. Links
   are listed without being followed. OS access-time updates/cloud hydration may
-  still occur. The one-file runtime unpacks to OS temp before scanning.
+  still occur. The one-file runtime unpacks to the Windows local profile temporary directory
+  before scanning; remote unpacked runtimes are rejected.
 
 ## Inspect or rebuild
 

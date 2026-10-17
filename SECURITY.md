@@ -7,7 +7,9 @@ including before and after a scan. SMB uses operating-system file I/O.
 
 Use local storage or SMB UNC/mapped paths for input and reports. URLs, known
 Windows WebDAV paths (including mapped drives), and non-SMB Linux network mounts
-are rejected. Run the application itself locally. Archive processing and XLSX
+are rejected. Run the application itself locally. The EXE unpacks beneath the Windows local
+profile temporary directory, independent of TEMP/TMP; a remote unpacked runtime
+is rejected. Archive processing and XLSX
 workspaces stay on local storage outside the inspected tree.
 
 The scanner does not edit, delete, rename, chmod or execute inspected files.

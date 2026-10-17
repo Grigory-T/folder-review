@@ -800,6 +800,8 @@ def safe_runtime(root: str, output: Path):
     validate_storage_transport(root)
     validate_storage_transport(output.parent)
     validate_output_path(output, root)
+    if getattr(sys, "frozen", False) and not local_storage(sys._MEIPASS):
+        raise ValueError("The unpacked application runtime must use local storage.")
     if getattr(sys, "frozen", False) and path_within(sys._MEIPASS, root):
         raise ValueError(
             "The inspected folder contains the running temporary runtime. Select a narrower input folder."

@@ -70,7 +70,8 @@ workflow. Tcl/Tk is bundled. The console-enabled bootloader hides only its own
 new console, preserving an existing terminal and redirected CLI streams.
 The adapter places default output beside the EXE, selects bundled 7-Zip for RAR,
 and escapes unprintable console diagnostics. Scanner logic is shared unchanged.
-The runtime unpacks to OS temp and is normally removed on exit. Inputs containing
+The runtime unpacks beneath `%LOCALAPPDATA%\Temp` (independent of TEMP/TMP)
+and is normally removed on exit. A remote unpacked runtime is rejected. Inputs containing
 that runtime are rejected. The EXE and selected report may be inside input.
 Reports may use SMB; only the selected report and its atomic-save staging file
 are permitted write exceptions. Processing workspaces stay local outside input.

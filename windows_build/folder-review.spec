@@ -52,5 +52,6 @@ exe = EXE(
     upx=False,
     console=True,
     hide_console=None if testing else "hide-early",
+    runtime_tmpdir=r"%LOCALAPPDATA%\Temp",
     version=str(root / 'windows_build' / 'version.txt'),
 )
