@@ -536,7 +536,12 @@ def main():
             {name: payload for name, (payload, _) in grouping_data.items()},
         )
 
+        inside_input = base / "inside-report-input"
+        inside_input.mkdir()
+        (inside_input / "data.txt").write_bytes(b"unchanged input")
+
         cases = [
+            ("inside-report", inside_input, [], 0, output),
             ("logical-grouping", grouping_input, [], 0, output),
             ("presentation-markers", marker_input, [], 2, output),
             ("hashes-and-folders", hash_input, ["--full-metadata"], 0, output),
@@ -557,6 +562,7 @@ def main():
         unc = Path(f"\\\\localhost\\{drive[0]}$" + tail)
         if unc.is_dir():
             cases.append(("UNC", unc, [], 0, output))
+            cases.append(("SMB-report", unc, [], 0, output))
         else:
             results["UNC"] = "not available to this logon session"
         # Map only our generated corpus, then remove the temporary mapping.
@@ -582,6 +588,7 @@ def main():
                 hash_input,
                 marker_input,
                 grouping_input,
+                inside_input,
                 *[case[1] for case in rar_cases],
             ]
             before = {str(folder): snapshot(folder) for folder in input_folders}
@@ -591,7 +598,11 @@ def main():
                     ("source", [sys.executable, str(ROOT / "folder_review.py")], None),
                     ("exe", [str(exe)], minimal_env),
                 ):
-                    target = destination / f"{name}-{label}.xlsx"
+                    target = (
+                        source / "folder-review.xlsx"
+                        if name in {"inside-report", "SMB-report"}
+                        else destination / f"{name}-{label}.xlsx"
+                    )
                     invocation = (
                         command
                         + [
@@ -762,15 +773,22 @@ def main():
                                 "all_workbook_members_match": True,
                             }
                         )
+                if name in {"inside-report", "SMB-report"}:
+                    target.unlink()
                 assert not list(staging.glob("_MEI*")), (
                     "Frozen runtime directory leaked"
                 )
                 assert not list(staging.glob("folder-review-*")), (
                     "Nested archive workspace leaked"
                 )
-            assert before == {
-                str(folder): snapshot(folder) for folder in input_folders
-            }, "Source input bytes changed"
+            after = {str(folder): snapshot(folder) for folder in input_folders}
+            # Creating/removing the explicitly requested report changes its parent
+            # directory timestamp; every existing file byte/metadata stays checked.
+            for folder in (inside_input, complete):
+                after[str(folder)]["."]["mtime_ns"] = before[str(folder)]["."][
+                    "mtime_ns"
+                ]
+            assert before == after, "Source input bytes or unrelated metadata changed"
 
             # Copy only the EXE to a path with spaces and non-ASCII characters.
             import shutil
@@ -792,27 +810,34 @@ def main():
             assert (portable / "folder-review.xlsx").is_file()
             assert not (output / "folder-review.xlsx").exists()
             assert not list(staging.glob("_MEI*"))
+            # The executable and its default report may be inside the input.
+            for _ in range(2):
+                run = subprocess.run(
+                    [str(relocated), "--root", str(portable)],
+                    cwd=output,
+                    env=minimal_env,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                assert run.returncode == 0, run.stdout + run.stderr
+                book = load_workbook(portable / "folder-review.xlsx", read_only=True)
+                try:
+                    sheet = book["folder_review"]
+                    headings = next(
+                        sheet.iter_rows(min_row=6, max_row=6, values_only=True)
+                    )
+                    names = [
+                        row[headings.index("File name")]
+                        for row in sheet.iter_rows(min_row=7, values_only=True)
+                    ]
+                    assert names == ["folder-review.exe"], names
+                finally:
+                    book.close()
             for flags, expected in (
                 (["--root", str(base / "absent")], 1),
                 (["--root", str(complete), "--output", str(output / "invalid.csv")], 1),
-                (
-                    [
-                        "--root",
-                        str(complete),
-                        "--output",
-                        str(complete / "forbidden.xlsx"),
-                    ],
-                    1,
-                ),
-                (
-                    [
-                        "--root",
-                        str(unc if unc.is_dir() else complete),
-                        "--output",
-                        str(complete / "forbidden-alias.xlsx"),
-                    ],
-                    1,
-                ),
                 (["--workers", "0"], 2),
                 (["--help"], 0),
                 ([], 1),

@@ -1778,6 +1778,115 @@ class FolderReviewTests(unittest.TestCase):
         finally:
             workbook.close()
 
+    def test_auto_workers_are_bounded_and_manual_override_is_preserved(self) -> None:
+        getter = (
+            "process_cpu_count"
+            if hasattr(folder_review.os, "process_cpu_count")
+            else "cpu_count"
+        )
+        for cpus, remote, expected in (
+            (1, False, 4),
+            (4, False, 8),
+            (64, False, 16),
+            (1, True, 8),
+            (4, True, 16),
+            (64, True, 32),
+            (None, False, 4),
+        ):
+            with (
+                mock.patch.object(folder_review.os, getter, return_value=cpus),
+                mock.patch.object(
+                    folder_review, "local_storage", return_value=not remote
+                ),
+            ):
+                self.assertEqual(folder_review.choose_workers("input"), expected)
+        self.assertIsNone(folder_review.worker_count("auto"))
+        self.assertEqual(folder_review.worker_count("23"), 23)
+        with mock.patch.object(
+            folder_review.sys, "argv", ["folder_review.py", "--workers", "23"]
+        ):
+            self.assertEqual(folder_review.parse_args().workers, 23)
+
+    def test_pasted_paths_preserve_unc_spaces_unicode_and_matching_quotes(self) -> None:
+        for raw, expected in (
+            (' "C:\\Folder with spaces\\пример" ', "C:\\Folder with spaces\\пример"),
+            ("'\\\\server\\share\\folder'", "\\\\server\\share\\folder"),
+            ("/data/folder\r\n", "/data/folder"),
+        ):
+            self.assertEqual(folder_review.pasted_path(raw), expected)
+
+    def test_workbook_freeze_widths_and_dax_reference_are_text(self) -> None:
+        output = self.root / "layout.xlsx"
+        folder_review.write_workbook([], output, "sample")
+        book = load_workbook(output)
+        try:
+            self.assertEqual(
+                book.sheetnames, ["folder_review", "scan_status", "dax_reference"]
+            )
+            self.assertEqual(book["folder_review"].freeze_panes, "A7")
+            for sheet in book:
+                self.assertTrue(
+                    all(
+                        abs(dim.width - 5.7109375) < 0.01
+                        for dim in sheet.column_dimensions.values()
+                    )
+                )
+            cell = book["dax_reference"]["A1"]
+            self.assertEqual(cell.value, folder_review.DAX_MEASURE)
+            self.assertEqual(cell.data_type, "s")
+            self.assertEqual(cell.value.count("'Data'[TextColumn]"), 1)
+            self.assertTrue(cell.value.startswith("=VAR Source"))
+        finally:
+            book.close()
+
+    def test_in_folder_report_is_excluded_on_repeated_scans(self) -> None:
+        root = self.root / "target"
+        root.mkdir()
+        source = root / "file.txt"
+        source.write_bytes(b"unchanged")
+        output = root / "folder-review.xlsx"
+        for _ in range(2):
+            with (
+                mock.patch.object(
+                    folder_review.sys,
+                    "argv",
+                    ["folder_review.py", "--root", str(root), "--output", str(output)],
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(folder_review.run(), 0)
+            book = load_workbook(output, read_only=True)
+            try:
+                sheet = book["folder_review"]
+                headers = next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+                records = list(sheet.iter_rows(min_row=7, values_only=True))
+                self.assertEqual(
+                    [row[headers.index("File name")] for row in records], ["file.txt"]
+                )
+            finally:
+                book.close()
+        self.assertEqual(source.read_bytes(), b"unchanged")
+        self.assertEqual(set(root.iterdir()), {source, output})
+
+    def test_tool_in_target_uses_default_report_without_an_extra_prompt(self) -> None:
+        root = self.root / "tool folder"
+        root.mkdir()
+        tool = root / "tool.py"
+        tool.write_bytes(b"ordinary source file")
+        with (
+            mock.patch.object(folder_review, "__file__", str(tool)),
+            mock.patch.object(
+                folder_review.sys, "argv", [str(tool), "--root", str(root)]
+            ),
+            mock.patch(
+                "builtins.input", side_effect=AssertionError("Unexpected prompt")
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(folder_review.run(), 0)
+        self.assertTrue((root / "folder-review.xlsx").is_file())
+        self.assertEqual(tool.read_bytes(), b"ordinary source file")
+
     def test_interactive_first_run_prompts_for_folder(self) -> None:
         input_root = self.root / "input"
         input_root.mkdir()
@@ -1890,14 +1999,22 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(source.stat().st_mode, before.st_mode)
         self.assertEqual(list(input_root.iterdir()), [source])
 
-    def test_output_inside_input_and_aliases_are_rejected(self) -> None:
+    def test_only_selected_report_can_be_written_inside_input_and_aliases(self) -> None:
         input_root = self.root / "input"
         input_root.mkdir()
-        with (
-            self.assertRaisesRegex(ValueError, "outside the inspected folder"),
-            folder_review.safe_runtime(str(input_root), input_root / "report.xlsx"),
-        ):
-            self.fail("Unsafe output was accepted")
+        output = input_root / "report.xlsx"
+        with folder_review.safe_runtime(str(input_root), output):
+            with self.assertRaises(PermissionError):
+                output.write_bytes(b"not a report save")
+            folder_review.write_workbook([], output, str(input_root))
+            with self.assertRaises(PermissionError):
+                folder_review.write_workbook(
+                    [], input_root / "other.xlsx", str(input_root)
+                )
+            with self.assertRaises(PermissionError):
+                (input_root / "other.txt").write_bytes(b"forbidden")
+        self.assertTrue(output.is_file())
+        output.unlink()
         alias = self.root / "alias"
         if os.name == "nt":
             subprocess.run(
@@ -1908,10 +2025,10 @@ class FolderReviewTests(unittest.TestCase):
         else:
             alias.symlink_to(input_root, target_is_directory=True)
         try:
-            with self.assertRaises(ValueError):
-                folder_review.validate_output_path(
-                    alias / "report.xlsx", str(input_root)
-                )
+            folder_review.validate_output_path(alias / "report.xlsx", str(input_root))
+            with folder_review.safe_runtime(str(input_root), alias / "report.xlsx"):
+                folder_review.write_workbook([], alias / "report.xlsx", str(input_root))
+            output.unlink()
             with (
                 folder_review.safe_runtime(str(input_root), self.root / "outside.xlsx"),
                 self.assertRaises(PermissionError),

@@ -16,9 +16,12 @@ local folder and run it, or use:
 .\folder-review.exe --root "C:\Data" --output "C:\Reports\folder-review.xlsx"
 ```
 
-The output folder must exist and be outside the scanned tree. Without
-`--output`, the report is saved beside the program; unsafe defaults prompt
-for another path.
+The output folder must exist. Without `--output`, the report is saved beside
+the program. The tool and report may sit inside the scanned folder; the selected
+report is excluded from the inventory. Local and SMB report destinations are
+supported. Existing reports are atomically replaced after a successful save.
+Paste a quoted or unquoted folder path at the prompt (Ctrl+V or Shift+Insert in
+Windows), then press Enter.
 
 ## Python
 
@@ -87,10 +90,21 @@ uv sync --frozen --no-dev
   differences from older reports are expected. Literal `_xNNNN_` names and
   carriage returns are preserved correctly in Excel. Some third-party readers
   may expose OOXML escape sequences in these unusual strings.
+- Column widths use 5 character units throughout. The inventory freezes rows
+  1-6 at A7; no columns are frozen. `dax_reference!A1` contains the supplied DAX
+  frequency-list measure as literal text. Copy its text from the formula bar and
+  edit the first SELECTCOLUMNS line for your model's table and column.
+- Worker selection defaults to `auto`: CPU-based I/O concurrency, 4-16 for local
+  inputs and 8-32 for network inputs. This is a bounded heuristic, not a universal
+  optimum; `--workers 1..64` remains available. No trial scans or extra input reads
+  are performed to choose workers.
 - `scan_status` records COMPLETE (exit `0`) or PARTIAL (exit `2`). Fatal errors
   return `1`. Archive integrity failures and inspection limits remain visible.
-- No web requests, telemetry or runtime downloads. Input is read-only to the
-  application; reports and temporary files use local storage outside it. Links
+- No web requests, telemetry or runtime downloads. Existing input files remain
+  read-only except the explicitly selected report. Its temporary atomic-save file
+  may also be created beside it; saving changes the parent directory timestamp.
+  The application and archive/XLSX processing workspace remain local and outside
+  the inspected tree; only report output may use SMB. Links
   are listed without being followed. OS access-time updates/cloud hydration may
   still occur. The one-file runtime unpacks to OS temp before scanning.
 

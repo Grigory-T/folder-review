@@ -1,4 +1,4 @@
-Folder Review 0.12.0 - Windows x86-64
+Folder Review 0.13.0 - Windows x86-64
 
 Copy this folder to a writable local folder on the Windows computer.
 Run folder-review.exe and enter the folder to inspect when prompted.
@@ -7,10 +7,20 @@ Local folders, mapped drives, and UNC paths are supported.
 For command-line use:
   folder-review.exe --root "C:\Data" --output "C:\Reports\folder-review.xlsx"
 
-The output folder must already exist. Without --output, the result is
-folder-review.xlsx beside the EXE. Output must be outside the inspected folder
-and on local storage. If the default is inside the input, an interactive run
-asks for another path. Existing output outside the input is replaced.
+The output folder must already exist. Without --output, folder-review.xlsx is
+saved beside the EXE. The EXE and report may be inside the target. The selected
+report is excluded on every scan. Reports may be local or on SMB; existing
+reports are atomically replaced. Other input files remain protected. Only the
+report and its staging file may be written there; the parent directory timestamp
+changes. Runtime and processing workspaces remain local outside the target.
+Paste a quoted/unquoted folder path with Ctrl+V or Shift+Insert, then press Enter.
+
+Workers default to auto: CPU-based, up to 16 local or 32 network workers.
+Use --workers 1..64 to override; auto is a bounded heuristic, not a guarantee
+of optimal performance for every disk or server.
+All column widths are 5 character units; inventory rows 1-6 freeze at A7.
+dax_reference!A1 contains the DAX frequency-list measure as literal text.
+Copy its text from the formula bar and edit the first SELECTCOLUMNS line.
 
 Scanning does not access external web services or download dependencies.
 SMB inputs remain supported; reads use operating-system file-sharing traffic.
@@ -22,14 +32,15 @@ The default workbook omits advanced filesystem metadata and the raw suffix,
 retaining Hidden and all content/inspection columns. Add --full-metadata for all columns.
 Actual inspected file paths/names remain in the workbook. Keep reports private.
 
-Content group IDs start at 1; equal fully read contents share an ID.
-For duplicate pivots: exclude blank IDs, group by Content group, sum last.
+Duplicate group IDs start at 1, only for repeated fully read contents.
+Unique, virtual and unhashed rows have blank IDs.
+For duplicate pivots: exclude blank IDs, group by Duplicate group, sum last.
 IDs belong to this report only. Internal BLAKE3-256 uses native code and reusable
 read buffers; full-file hashing increases disk/SMB traffic. Unreadable/changing
 content and links have no ID; this is not a filesystem snapshot.
 Raw BLAKE3 is available with --full-metadata.
 
-last is ALWAYS 1. Filter Virtual row and Status to select rows for analysis.
+last is ALWAYS 1. Filter Virtual row and Inspection state to select rows for analysis.
 Virtual markers: dummy.dummy (no inventoried files), deny.deny (access denied),
 password.password, corrupt.corrupt, limit.limit and error.error. No file is
 created. Original locations remain in hierarchy/full paths; errors and known

@@ -77,6 +77,26 @@ ADVANCED_METADATA_HEADERS = frozenset(
 )
 
 
+DAX_MEASURE = """=VAR Source =
+    SELECTCOLUMNS ( 'Data', "Value", 'Data'[TextColumn] )
+
+VAR Counts =
+    GROUPBY (
+        FILTER ( Source, LEN ( TRIM ( [Value] ) ) > 0 ),
+        [Value],
+        "Count", COUNTX ( CURRENTGROUP (), 1 )
+    )
+
+RETURN
+    CONCATENATEX (
+        Counts,
+        [Value] & " (" & [Count] & ")",
+        " · ",
+        [Count], DESC,
+        [Value], ASC
+    )"""
+
+
 # Runtime limits -------------------------------------------------------------
 
 DEFAULT_WORKERS = 16
@@ -538,15 +558,14 @@ def local_storage(path: str | os.PathLike[str]) -> bool:
 
 
 def validate_output_path(output: Path, root: str) -> None:
-    if path_within(output, root):
-        raise ValueError("Output must be outside the inspected folder. Use --output.")
-    if not local_storage(output.parent):
-        raise ValueError(
-            "Output must be on local storage; network inputs are supported."
-        )
+    """Reports may be inside input/on SMB; never follow a report symlink."""
+    if os.path.islink(extended_path(output)):
+        raise ValueError("Report output must not be a symbolic link.")
 
 
 _protected_root: str | None = None
+_report_output_path: str | None = None
+_report_write_paths: set[str] = set()
 
 
 def runtime_audit(event: str, arguments: tuple) -> None:
@@ -590,6 +609,10 @@ def runtime_audit(event: str, arguments: tuple) -> None:
         value = os.fsdecode(value)
         if dir_fd is not None and dir_fd != -1 and not os.path.isabs(value):
             value = os.path.join(os.readlink(f"/proc/self/fd/{dir_fd}"), value)
+        if normalized_key(value) in _report_write_paths:
+            if os.path.islink(extended_path(value)):
+                raise PermissionError("Report writes must not follow symbolic links.")
+            return
         if path_within(value, root):
             raise PermissionError(
                 "The inspected folder is read-only for folder review."
@@ -689,8 +712,8 @@ sys.addaudithook(runtime_audit)
 
 @contextmanager
 def safe_runtime(root: str, output: Path):
-    """Keep all application work files outside the read-only input tree."""
-    global _protected_root
+    """Keep workspaces outside input; only the selected report may be saved in it."""
+    global _protected_root, _report_output_path
     if _protected_root is not None:
         raise RuntimeError("Concurrent scans in one Python process are not supported.")
     validate_output_path(output, root)
@@ -700,15 +723,35 @@ def safe_runtime(root: str, output: Path):
         )
     previous_tempdir = tempfile.tempdir
     _protected_root = root
+    _report_output_path = normalized_key(output)
     try:
         # gettempdir() may probe candidate folders by creating a file. Guard
         # those probes too, including when TEMP/TMP points into the input.
         try:
             workspace_parent = tempfile.gettempdir()
         except FileNotFoundError:
-            workspace_parent = str(output.parent)
-        if path_within(workspace_parent, root) or not local_storage(workspace_parent):
-            workspace_parent = str(output.parent)
+            workspace_parent = None
+        candidates = [
+            workspace_parent,
+            str(output.parent),
+            os.path.dirname(absolute_path(root)),
+            str(Path.home()),
+        ]
+        workspace_parent = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate
+                and not path_within(candidate, root)
+                and local_storage(candidate)
+                and os.path.isdir(extended_path(candidate))
+            ),
+            None,
+        )
+        if workspace_parent is None:
+            raise ValueError(
+                "No local temporary folder outside the inspected folder is available."
+            )
         with tempfile.TemporaryDirectory(
             prefix="folder-review-work-", dir=extended_path(workspace_parent)
         ) as workspace:
@@ -720,6 +763,8 @@ def safe_runtime(root: str, output: Path):
     finally:
         tempfile.tempdir = previous_tempdir
         _protected_root = None
+        _report_output_path = None
+        _report_write_paths.clear()
 
 
 def split_archive_path(name: str) -> tuple[str, ...]:
@@ -2878,10 +2923,24 @@ def _report_workbook(output_path: Path):
     """Close/compress successfully before atomically replacing the report."""
     output_name = absolute_path(output_path)
     output_folder = os.path.dirname(output_name)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=".folder-review-", suffix=".tmp.xlsx", dir=extended_path(output_folder)
+    if (
+        _protected_root is not None
+        and normalized_key(output_name) != _report_output_path
+    ):
+        raise PermissionError("Only the selected report output may be written.")
+    temporary = os.path.join(
+        output_folder, f".folder-review-{os.urandom(16).hex()}.tmp.xlsx"
     )
-    os.close(descriptor)
+    allowed = {normalized_key(temporary), normalized_key(output_name)}
+    _report_write_paths.update(allowed)
+    try:
+        descriptor = os.open(
+            extended_path(temporary), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
+        )
+        os.close(descriptor)
+    except BaseException:
+        _report_write_paths.difference_update(allowed)
+        raise
     try:
         with xlsxwriter.Workbook(
             extended_path(temporary),
@@ -2900,6 +2959,8 @@ def _report_workbook(output_path: Path):
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+        finally:
+            _report_write_paths.difference_update(allowed)
 
 
 def write_workbook(
@@ -3034,44 +3095,8 @@ def write_workbook(
 
         first_table_column = 2
         last_table_column = first_table_column + len(headers) - 1
-        sheet.set_column(0, 0, 5.81640625 - 5 / 7)
-        wide_columns = {
-            "Duplicate group": 16,
-            "Content hash (BLAKE3)": 67,
-            "Type group": 24,
-            "Type subgroup": 30,
-            "Virtual row": 16,
-            "Inspection state": 24,
-            "Raw suffix": 24,
-            "Full path": 42,
-            "Name without extension": 20,
-            "File name": 24,
-            "Item type": 24,
-            "Detected role": 38,
-            "Link type": 20,
-            "Link target": 32,
-            "Permissions": 16,
-            "File attributes (Windows)": 32,
-            "File ID (st_ino)": 22,
-            "Device ID (st_dev)": 22,
-            "Device type (st_rdev)": 16,
-            "Owner ID (st_uid)": 17,
-            "Group ID (st_gid)": 17,
-            "Accessed at": 20,
-            "Modified at": 20,
-            "Created at": 20,
-            "Metadata changed at": 20,
-            "Integrity status": 20,
-            "Detected content type": 24,
-            "Error": 20,
-        }
-        for offset, column in enumerate(
-            range(first_table_column, last_table_column + 1)
-        ):
-            boundary = column in (first_table_column, last_table_column)
-            header = headers[offset]
-            width = 5.81640625 if boundary else wide_columns.get(header, 12.54296875)
-            sheet.set_column(column - 1, column - 1, width - 5 / 7)
+        sheet.set_column(0, last_table_column - 1, 5)
+        sheet.freeze_panes("A7")
         sheet.set_row(5, 72)
 
         ws.append([None])
@@ -3327,8 +3352,7 @@ def write_workbook(
         status.hide_gridlines(2)
         status.set_tab_color("#70AD47" if report.status == "COMPLETE" else "#FFC000")
         status.freeze_panes(1, 0)
-        status.set_column(0, 0, 34 - 5 / 7)
-        status.set_column(1, 2, 72 - 5 / 7)
+        status.set_column(0, 2, 5)
         status.set_margins(0.75, 0.75, 1, 1)
         status.set_header("", {"margin": 0.5})
         status.set_footer("", {"margin": 0.5})
@@ -3533,6 +3557,14 @@ def write_workbook(
                 ]
             )
 
+        dax = wb.add_worksheet("dax_reference")
+        dax.set_column(0, 0, 5)
+        dax.write_string("A1", DAX_MEASURE)
+        dax.write_string(
+            "A3",
+            "Copy the text of A1 from the formula bar into a Power Pivot measure. Edit the first SELECTCOLUMNS line for your table and column. This cell is text, not an Excel formula.",
+        )
+
 
 # Command-line entry point ---------------------------------------------------
 
@@ -3544,11 +3576,54 @@ def validate_platform() -> None:
         raise RuntimeError("This operating system is not supported.")
 
 
-def worker_count(value: str) -> int:
+def worker_count(value: str) -> int | None:
+    if value.casefold() == "auto":
+        return None
     workers = int(value)
     if not 1 <= workers <= 64:
         raise argparse.ArgumentTypeError("workers must be between 1 and 64")
     return workers
+
+
+def choose_workers(root: str) -> int:
+    """Bounded I/O concurrency, without benchmarking or rereading input files."""
+    cpu_count = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    remote = not local_storage(root)
+    return min(
+        32 if remote else 16, max(8 if remote else 4, cpu_count * (4 if remote else 2))
+    )
+
+
+def pasted_path(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+@contextmanager
+def console_paste_mode():
+    """Enable standard console paste/editing while prompting; restore host mode."""
+    if os.name != "nt":
+        yield
+        return
+    import ctypes
+
+    api = ctypes.windll.kernel32
+    api.GetStdHandle.argtypes = [ctypes.c_ulong]
+    api.GetStdHandle.restype = ctypes.c_void_p
+    api.GetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    api.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    handle = api.GetStdHandle(-10)
+    mode = ctypes.c_ulong()
+    changed = bool(api.GetConsoleMode(handle, ctypes.byref(mode)))
+    if changed:
+        changed = bool(api.SetConsoleMode(handle, mode.value | 0xE7))
+    try:
+        yield
+    finally:
+        if changed:
+            api.SetConsoleMode(handle, mode.value)
 
 
 def non_negative_float(value: str) -> float:
@@ -3570,7 +3645,7 @@ def row_limit(value: str) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
-    parser.add_argument("--output", help="Override the local XLSX output path")
+    parser.add_argument("--output", help="Override the XLSX report path (local or SMB)")
     parser.add_argument(
         "--full-metadata",
         action="store_true",
@@ -3579,8 +3654,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=worker_count,
-        default=DEFAULT_WORKERS,
-        help=f"Concurrent file workers (default: {DEFAULT_WORKERS})",
+        default=None,
+        help="Concurrent file workers: auto (default) or 1-64; auto uses CPU capacity and local/network input",
     )
     parser.add_argument(
         "--max-expanded-gib",
@@ -3608,7 +3683,7 @@ def run() -> int:
     args = parse_args()
     script_dir = Path(os.path.dirname(absolute_path(__file__)))
 
-    configured_root = (args.root or ROOT_FOLDER).strip().strip('"')
+    configured_root = pasted_path(args.root or ROOT_FOLDER)
     if (
         not args.root
         and configured_root == ROOT_FOLDER
@@ -3616,7 +3691,12 @@ def run() -> int:
     ):
         if not sys.stdin.isatty():
             raise ValueError("Run with --root or start RUN.bat interactively.")
-        configured_root = input("Folder to inspect: ").strip().strip('"')
+        with console_paste_mode():
+            configured_root = pasted_path(
+                input(
+                    "Folder to inspect (paste with Ctrl+V or Shift+Insert, then Enter): "
+                )
+            )
         if not configured_root:
             raise ValueError("No folder was entered.")
     root_folder = absolute_path(os.path.normpath(configured_root))
@@ -3633,24 +3713,10 @@ def run() -> int:
 
     if not local_storage(script_dir):
         raise ValueError("Copy the tool to a local folder before running it.")
-    try:
-        validate_output_path(output_path, root_folder)
-    except ValueError:
-        if args.output or not sys.stdin.isatty():
-            raise
-        entered = (
-            input("Local XLSX output path outside the inspected folder: ")
-            .strip()
-            .strip('"')
-        )
-        if not entered:
-            raise ValueError("No output path was entered.")
-        output_path = Path(absolute_path(entered))
-        if output_path.suffix.lower() != ".xlsx" or not os.path.isdir(
-            extended_path(output_path.parent)
-        ):
-            raise ValueError("Enter an .xlsx path in an existing local folder.")
+    validate_output_path(output_path, root_folder)
 
+    if args.workers is None:
+        args.workers = choose_workers(root_folder)
     with safe_runtime(root_folder, output_path):
         return scan_and_report(args, root_folder, output_path)
 
