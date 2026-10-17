@@ -1,0 +1,25 @@
+Folder Review's own source is licensed under MIT. Dependencies retain their licenses.
+
+Runtime: CPython 3.13.16 (PSF and bundled component notices), Tcl/Tk,
+XlsxWriter (BSD-2-Clause), BLAKE3 (CC0-1.0 OR Apache-2.0), olefile (BSD),
+rarfile (ISC), Brotli (MIT), texttable (MIT), psutil (BSD-3-Clause),
+backports.zstd (PSF-2.0 and zstd notices), pycryptodomex (BSD/Public Domain),
+py7zr, multivolumefile, inflate64, pybcj and pyppmd (LGPL-2.1-or-later).
+Actual versions and verified native origins are listed in components.json.
+openpyxl/et-xmlfile are test readers only and are not bundled in the EXE.
+
+This distribution includes unmodified 7-Zip 26.04 7z.exe and 7z.dll,
+under GNU LGPL with BSD-licensed code and the unRAR restriction.
+See 7zip-license.txt, third-party-licenses/, and https://www.7-zip.org/.
+Complete corresponding sources for 7-Zip and the LGPL Python libraries
+are supplied in third-party-sources.zip with verified upstream hashes.
+
+Users may modify/rebuild the separately licensed components and debug their
+modifications under their licenses. Project MIT terms impose no additional
+restriction on reverse engineering, modification, or replacement of LGPL parts.
+Python's notices retain Microsoft's conditions for its Windows runtime code.
+
+PyInstaller's bootloader is GPL with a distribution exception allowing bundled
+applications to retain their own licenses. Its license text is included.
+All license texts are in the full package and embedded in the standalone EXE.
+Run folder-review.exe --licenses to print them without network access.

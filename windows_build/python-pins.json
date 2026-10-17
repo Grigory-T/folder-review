@@ -1,0 +1,12 @@
+{
+  "version": "3.13.16",
+  "provider": "Astral python-build-standalone",
+  "release": "20261013",
+  "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.13.16%2B20261013-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+  "archive": "cpython-3.13.16+20261013-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+  "sha256": "7aba3985d4cee1c7cacb963ca6aa08a5d3e695d7f9609d9fabc56f22ddcf5a06",
+  "core_sha256": {
+    "python.exe": "9b0ac461f54e03a8385db26269226acbd68d14df3c9b58fee9866d8a0d996534",
+    "python313.dll": "cb656652042a4f427b984f253370fc3e44f08c3c3b05e4f254abe6c6d3449fd4"
+  }
+}

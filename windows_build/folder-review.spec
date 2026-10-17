@@ -8,6 +8,12 @@ testing = os.environ.get('FOLDER_REVIEW_BUILD_TESTS') == '1'
 name = 'folder-review-tests' if testing else 'folder-review'
 entry = root / 'windows_build' / ('test_entry.py' if testing else 'entry.py')
 data = [(str(sevenzip / 'License.txt'), 'licenses/7zip')]
+data += [(str(root / 'LICENSE'), 'licenses'),
+         (str(root / 'windows_build/THIRD-PARTY-NOTICES.txt'), 'licenses')]
+for license_file in sorted((root / 'third_party/licenses').rglob('*')):
+    if license_file.is_file():
+        relative = license_file.relative_to(root / 'third_party/licenses')
+        data.append((str(license_file), str(Path('licenses/third-party') / relative.parent)))
 # Tk's license covers the Tcl/Tk runtime distributed with Python.
 import sys
 data.append((str(Path(sys.base_prefix) / 'tcl/tk8.6/license.terms'), 'licenses/tcl-tk'))

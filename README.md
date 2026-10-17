@@ -39,7 +39,7 @@ Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and a compatible
 [7-Zip](https://www.7-zip.org/) extractor for compressed RAR files.
 
 On Windows, run `SETUP.bat` once, then `RUN.bat`. Setup may download dependencies;
-normal launches are offline. On Linux:
+normal launches are offline. Setup selects Python 3.13.16. On Linux:
 
 ```bash
 uv sync --frozen --no-dev
@@ -120,7 +120,8 @@ uv sync --frozen --no-dev
   read-only except the explicitly selected report. Its temporary atomic-save file
   may also be created beside it; saving changes the parent directory timestamp.
   The application runs locally; archive/XLSX processing workspaces stay local
-  outside the inspected tree. Only report output may use SMB. Links
+  outside the inspected tree. Input and report output may use SMB. URLs, WebDAV and known other network
+  filesystems are rejected. Links
   are listed without being followed. OS access-time updates/cloud hydration may
   still occur. The one-file runtime unpacks to OS temp before scanning.
 
@@ -130,4 +131,8 @@ uv sync --frozen --no-dev
 
 Releases include matching Python files, licenses, input/artifact hashes,
 source-versus-EXE tests and a byte-identical clean-rebuild check.
-Windows 11 is tested; Windows 10 remains unverified. MIT license.
+Windows 11 is tested; Windows 10 remains unverified. Folder Review source is MIT;
+dependencies retain their licenses. [Security boundaries](SECURITY.md) ·
+[Third-party licenses and corresponding sources](third_party/README.md).
+Use `--licenses` on its own to print the bundled notices locally.
+Releases include `components.json` and `third-party-sources.zip`.

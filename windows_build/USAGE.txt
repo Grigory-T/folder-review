@@ -73,3 +73,9 @@ Report labels and technical values are English; original names and diagnostic
 messages are preserved. The full selected root appears above the inventory.
 Relative path is relative to that root; :: separates archive members.
 Inventory zoom is 70%; scan_status uses readable column widths.
+
+Use --licenses on its own to print the embedded third-party license notices.
+The full ZIP includes components.json and corresponding LGPL source archives.
+Python networking is disabled throughout application execution. Only local
+filesystems and SMB are supported; URLs and WebDAV are rejected.
+Application safeguards are not an OS sandbox; see SECURITY.md for the limits.

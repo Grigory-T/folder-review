@@ -40,9 +40,12 @@ $env:PYTHONHASHSEED = '0'
 $env:SOURCE_DATE_EPOCH = '1767225600'
 $env:PYTHONNOUSERSITE = '1'
 Remove-Item Env:PYTHONHOME, Env:PYTHONPATH -ErrorAction SilentlyContinue
-Invoke-Native $uvPath @('venv', '--clear', '.build-venv', '--python', '3.13.14')
+& (Join-Path $PSScriptRoot 'prepare-runtime.ps1')
+$runtimePython = Join-Path $root '.build\python-runtime\python\python.exe'
+Invoke-Native $runtimePython @('-B', 'windows_build\verify_runtime.py')
+Invoke-Native $uvPath @('venv', '--clear', '.build-venv', '--python', $runtimePython, '--no-python-downloads')
 $py = Join-Path $root '.build-venv\Scripts\python.exe'
-Invoke-Native $py @('-c', 'import sys; assert sys.version_info[:3] == (3,13,14) and sys.maxsize > 2**32')
+Invoke-Native $py @('-c', 'import sys; assert sys.version_info[:3] == (3,13,16) and sys.maxsize > 2**32')
 Invoke-Native $uvPath @('export', '--frozen', '--no-dev', '--no-emit-project', '--output-file', '.build\runtime-requirements.txt')
 Invoke-Native $uvPath @('export', '--frozen', '--only-group', 'test', '--no-emit-project', '--output-file', '.build\test-requirements.txt')
 Invoke-Native $uvPath @('pip', 'install', '--python', $py, '--require-hashes', '-r', '.build\runtime-requirements.txt', '-r', '.build\test-requirements.txt', '-r', 'windows_build\requirements-build.txt')
@@ -65,12 +68,15 @@ New-Item -ItemType Directory -Force -Path '.build\release' | Out-Null
 Copy-Item '.build\candidate\folder-review.exe' '.build\release\folder-review.exe' -Force
 Copy-Item '.build\verification.json' '.build\release\verification.json' -Force
 Copy-Item '.build\source-tests.json', '.build\frozen-tests.json', '.build\reproducibility.json' '.build\release' -Force
-Copy-Item 'LICENSE', 'windows_build\THIRD-PARTY-NOTICES.txt', 'windows_build\USAGE.txt' '.build\release' -Force
+Copy-Item 'LICENSE', 'SECURITY.md', 'windows_build\THIRD-PARTY-NOTICES.txt', 'windows_build\USAGE.txt' '.build\release' -Force
 Copy-Item (Join-Path $SevenZipDir 'License.txt') '.build\release\7zip-license.txt' -Force
 # Both deliveries come from these same inputs; manifest preparation verifies
 # that no older standalone Python scanner can be published beside this EXE.
 New-Item -ItemType Directory -Force -Path '.build\release\python' | Out-Null
 Copy-Item 'folder_review.py', 'folder_review_ui.py', 'pyproject.toml', 'uv.lock', 'RUN.bat', 'SETUP.bat', 'README.md', 'LICENSE' '.build\release\python' -Force
+Copy-Item 'third_party' '.build\release\python\third_party' -Recurse -Force
+Invoke-Native $py @('windows_build\compliance.py', '--destination', '.build\release')
+Invoke-Native $py @('windows_build\sbom.py', '--exe', '.build\release\folder-review.exe', '--output', '.build\release\components.json')
 Invoke-Native $py @('windows_build\manifest.py', '--exe', '.build\release\folder-review.exe', '--output', '.build\release\build-manifest.json')
 New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
 Copy-Item '.build\release\*' 'dist' -Recurse -Force

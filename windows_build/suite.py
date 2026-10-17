@@ -29,7 +29,7 @@ def run_suite(suite):
     unexpected_skips = [
         reason
         for _, reason in result.skipped
-        if reason != "POSIX link and FIFO behavior"
+        if reason not in {"POSIX link and FIFO behavior", "Linux mount metadata"}
     ]
     if unexpected_skips:
         print(

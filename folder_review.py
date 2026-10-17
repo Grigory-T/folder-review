@@ -27,6 +27,21 @@ from threading import Lock, Semaphore
 # A normal source launch must not create caches beside inspected source files.
 sys.dont_write_bytecode = True
 
+
+def offline_audit(event: str, arguments: tuple) -> None:
+    """Keep Python networking disabled, including startup and idle GUI time."""
+    if event.startswith("socket.") or event in {
+        "urllib.Request",
+        "http.client.connect",
+        "webbrowser.open",
+        "winreg.ConnectRegistry",
+    }:
+        raise PermissionError("Network APIs are disabled in Folder Review.")
+
+
+# Install before importing third-party runtime packages. SMB uses OS file I/O.
+sys.addaudithook(offline_audit)
+
 import olefile
 import py7zr
 import rarfile
@@ -527,21 +542,8 @@ def path_within(path: str | os.PathLike[str], root: str) -> bool:
         candidate = parent
 
 
-def local_storage(path: str | os.PathLike[str]) -> bool:
-    """Reject remote working/output storage; remote input reads stay allowed."""
-    candidate = resolved_path(path)
-    if os.name == "nt":
-        import ctypes
-
-        drive, _ = os.path.splitdrive(candidate)
-        if drive.startswith("\\\\"):
-            return False
-        get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
-        get_drive_type.argtypes = [ctypes.c_wchar_p]
-        get_drive_type.restype = ctypes.c_uint
-        return get_drive_type(drive + "\\") in (2, 3, 6)  # removable, fixed, RAM
-    # Linux mount metadata is local; this does not contact a server.
-    network_types = {"cifs", "smb3", "nfs", "nfs4", "fuse.sshfs", "9p", "afs"}
+def linux_filesystem(candidate: str) -> str:
+    """Read local mount metadata; no server or trial file access."""
     best_mount = ""
     filesystem = ""
     with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
@@ -554,7 +556,93 @@ def local_storage(path: str | os.PathLike[str]) -> bool:
                 candidate == mount or candidate.startswith(mount.rstrip("/") + "/")
             ) and len(mount) > len(best_mount):
                 best_mount, filesystem = mount, details.split()[0]
-    return filesystem not in network_types
+    return filesystem
+
+
+def remote_filesystem(filesystem: str) -> bool:
+    return filesystem in {
+        "cifs",
+        "smb3",
+        "nfs",
+        "nfs4",
+        "9p",
+        "afs",
+        "ceph",
+        "glusterfs",
+        "fuse",
+    } or filesystem.startswith("fuse.")
+
+
+def reject_web_path(path: str | os.PathLike[str]) -> None:
+    value = os.fsdecode(path)
+    if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
+        raise ValueError(
+            "Use a filesystem path, not a URL; only SMB network storage is supported."
+        )
+    value = value.replace("/", "\\")
+    if value.lower().startswith("\\\\?\\unc\\"):
+        value = "\\\\" + value[8:]
+    if value.startswith("\\\\"):
+        parts = value[2:].split("\\")
+        if (len(parts) > 1 and parts[1].casefold() == "davwwwroot") or re.search(
+            r"@(?:ssl|\d+)(?:@|$)", parts[0], re.IGNORECASE
+        ):
+            raise ValueError(
+                "WebDAV paths are not supported; only SMB network storage is allowed."
+            )
+
+
+def windows_mapped_path(path: str) -> str | None:
+    """Get an existing drive mapping from Windows, without opening the target."""
+    import ctypes
+
+    drive, _ = ntpath.splitdrive(path)
+    if len(drive) != 2 or drive[1] != ":":
+        return None
+    size = ctypes.c_uint(32_768)
+    buffer = ctypes.create_unicode_buffer(size.value)
+    get_connection = ctypes.windll.mpr.WNetGetConnectionW
+    get_connection.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint),
+    ]
+    get_connection.restype = ctypes.c_uint
+    return (
+        buffer.value if get_connection(drive, buffer, ctypes.byref(size)) == 0 else None
+    )
+
+
+def validate_storage_transport(path: str | os.PathLike[str]) -> None:
+    """Allow local filesystems and SMB; reject URLs and known other providers."""
+    reject_web_path(path)
+    candidate = absolute_path(path)
+    if os.name == "nt":
+        mapped = windows_mapped_path(candidate)
+        if mapped:
+            reject_web_path(mapped)
+        reject_web_path(resolved_path(candidate))
+    else:
+        for location in {candidate, resolved_path(candidate)}:
+            filesystem = linux_filesystem(location)
+            if remote_filesystem(filesystem) and filesystem not in {"cifs", "smb3"}:
+                raise ValueError("Only SMB network storage is supported.")
+
+
+def local_storage(path: str | os.PathLike[str]) -> bool:
+    """Processing stays local; SMB is permitted only for input/report I/O."""
+    candidate = resolved_path(path)
+    if os.name == "nt":
+        import ctypes
+
+        drive, _ = os.path.splitdrive(candidate)
+        if drive.startswith("\\\\"):
+            return False
+        get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
+        get_drive_type.argtypes = [ctypes.c_wchar_p]
+        get_drive_type.restype = ctypes.c_uint
+        return get_drive_type(drive + "\\") in (2, 3, 6)
+    return not remote_filesystem(linux_filesystem(candidate))
 
 
 def validate_output_path(output: Path, root: str) -> None:
@@ -573,13 +661,6 @@ def runtime_audit(event: str, arguments: tuple) -> None:
     root = _protected_root
     if root is None:
         return
-    if event.startswith("socket.") or event in {
-        "urllib.Request",
-        "http.client.connect",
-        "webbrowser.open",
-        "winreg.ConnectRegistry",
-    }:
-        raise PermissionError("Network APIs are disabled during folder review.")
 
     def protect(value, dir_fd=None):
         if isinstance(value, int):
@@ -716,6 +797,8 @@ def safe_runtime(root: str, output: Path):
     global _protected_root, _report_output_path
     if _protected_root is not None:
         raise RuntimeError("Concurrent scans in one Python process are not supported.")
+    validate_storage_transport(root)
+    validate_storage_transport(output.parent)
     validate_output_path(output, root)
     if getattr(sys, "frozen", False) and path_within(sys._MEIPASS, root):
         raise ValueError(
@@ -853,10 +936,14 @@ def report_relative_path(path: str, root_folder: str) -> str:
     # POSIX folder names may themselves contain ::. Look for archive notation
     # only after the selected root, never inside its original spelling.
     prefix = root.rstrip(path_module.sep) + path_module.sep
-    start = len(root) if (
-        path_module.normcase(path) == path_module.normcase(root)
-        or path_module.normcase(path).startswith(path_module.normcase(prefix))
-    ) else 0
+    start = (
+        len(root)
+        if (
+            path_module.normcase(path) == path_module.normcase(root)
+            or path_module.normcase(path).startswith(path_module.normcase(prefix))
+        )
+        else 0
+    )
     physical, separator, members = path[start:].partition("::")
     physical = path[:start] + physical
     try:
@@ -892,7 +979,11 @@ _EXTENSION_GROUPS = (
         "Text documents",
         "doc docx docm dot dotx dotm odt ott rtf pages wpd chm",
     ),
-    ("Documents", "Spreadsheets", "xls xlsx xlsm xlsb xlt xltx xltm xlc ods ots numbers"),
+    (
+        "Documents",
+        "Spreadsheets",
+        "xls xlsx xlsm xlsb xlt xltx xltm xlc ods ots numbers",
+    ),
     ("Documents", "Presentations", "ppt pptx pptm potx potm pps ppsx ppsm odp otp"),
     ("Documents", "PDF and print documents", "pdf xps oxps ps eps"),
     ("Documents", "E-books", "epub mobi azw azw3 fb2 djvu djv"),
@@ -922,7 +1013,11 @@ _EXTENSION_GROUPS = (
     ),
     ("Video", "Subtitles", "srt ass ssa vtt sub"),
     ("Archives and disk images", "Archives", "zip rar 7z tar cab cpio ar lzh lha ace"),
-    ("Archives and disk images", "Compressed files", "gz bz2 xz zst zstd lz lzma br z tgz tbz2 txz"),
+    (
+        "Archives and disk images",
+        "Compressed files",
+        "gz bz2 xz zst zstd lz lzma br z tgz tbz2 txz",
+    ),
     (
         "Archives and disk images",
         "Disk images",
@@ -3674,6 +3769,11 @@ def row_limit(value: str) -> int:
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--licenses",
+        action="store_true",
+        help="Print bundled license notices and exit (use on its own)",
+    )
+    parser.add_argument(
         "--cli",
         action="store_true",
         help="Use terminal prompts instead of the desktop window",
@@ -3743,6 +3843,8 @@ def execute_review(args, configured_root: str, output_path: Path, progress=None)
     validate_platform()
     if not configured_root:
         raise ValueError("Choose a folder to inspect.")
+    validate_storage_transport(configured_root)
+    validate_storage_transport(output_path.parent)
     root_folder = absolute_path(os.path.normpath(configured_root))
     if not os.path.isdir(extended_path(root_folder)):
         raise ValueError(f"Folder is unavailable: {root_folder}")
@@ -3891,9 +3993,34 @@ def scan_and_report(
     return 0
 
 
+def show_licenses() -> None:
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS) / "licenses"
+        files = sorted(path for path in base.rglob("*") if path.is_file())
+    else:
+        base = Path(__file__).resolve().parent
+        files = [base / "LICENSE", base / "third_party/NOTICE.txt"]
+        files += sorted(
+            path
+            for path in (base / "third_party/licenses").rglob("*")
+            if path.is_file()
+        )
+    for path in files:
+        if path.is_file():
+            print(f"\n--- {path.relative_to(base).as_posix()} ---\n")
+            print(path.read_text(encoding="utf-8", errors="replace"))
+
+
 def main() -> int:
     try:
         validate_platform()
+        if not local_storage(os.path.dirname(absolute_path(__file__))):
+            raise ValueError("Copy the tool to a local folder before running it.")
+        if "--licenses" in sys.argv[1:]:
+            if sys.argv[1:] != ["--licenses"]:
+                raise ValueError("Use --licenses on its own.")
+            show_licenses()
+            return 0
         if not sys.argv[1:] or sys.argv[1:] == ["--gui"]:
             from folder_review_ui import launch
 

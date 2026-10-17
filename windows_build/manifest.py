@@ -112,9 +112,13 @@ def main():
         ROOT / "folder_review_ui.py",
         ROOT / "tests/test_folder_review_ui.py",
         ROOT / "BUILD-EXE.bat",
+        ROOT / ".gitattributes",
         ROOT / "RUN.bat",
         ROOT / "SETUP.bat",
         ROOT / "README.md",
+        ROOT / "LICENSE",
+        ROOT / "SECURITY.md",
+        *sorted((ROOT / "third_party").rglob("*")),
         ROOT / "pyproject.toml",
         ROOT / "uv.lock",
         ROOT / "tests/test_folder_review.py",
@@ -130,6 +134,11 @@ def main():
         "SETUP.bat",
         "README.md",
         "LICENSE",
+    )
+    python_files += tuple(
+        path.relative_to(ROOT).as_posix()
+        for path in sorted((ROOT / "third_party").rglob("*"))
+        if path.is_file()
     )
     python_delivery = args.output.parent / "python"
     for name in python_files:
@@ -180,6 +189,13 @@ def main():
         "python": platform.python_version(),
         "build_platform": platform.platform(),
         "package_versions": {name: d.version for name, d in distributions.items()},
+        "python_runtime_pin": json.loads(
+            (ROOT / "windows_build/python-pins.json").read_text()
+        ),
+        "component_inventory_sha256": sha256(args.output.parent / "components.json"),
+        "corresponding_source_bundle_sha256": sha256(
+            args.output.parent / "third-party-sources.zip"
+        ),
         "report_writer": {"library": "XlsxWriter", "constant_memory": True},
         "content_identity": {
             "algorithm": "BLAKE3-256",

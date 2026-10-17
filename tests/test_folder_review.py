@@ -111,12 +111,13 @@ class FolderReviewTests(unittest.TestCase):
                 all(row["last"] == 1 and row["Virtual row"] == "Yes" for row in records)
             )
             self.assertTrue(all(row["Duplicate group"] is None for row in records))
-            self.assertTrue(
-                all(row["Type group"] == "Virtual rows" for row in records)
-            )
+            self.assertTrue(all(row["Type group"] == "Virtual rows" for row in records))
             self.assertEqual(
                 [row["Relative path"] for row in records],
-                [folder_review.report_relative_path(row.full_path, "data") for row in rows],
+                [
+                    folder_review.report_relative_path(row.full_path, "data")
+                    for row in rows
+                ],
             )
             self.assertEqual(records[2]["Level 1"], "encrypted.7z")
             self.assertEqual(records[2]["Level 2"], "password.password")
@@ -300,7 +301,10 @@ class FolderReviewTests(unittest.TestCase):
             "app.js.map": ("Software and code", "Debug information and source maps"),
             "style.css.map": ("Software and code", "Debug information and source maps"),
             "readme.js.map": ("Software and code", "Debug information and source maps"),
-            "license.css.map": ("Software and code", "Debug information and source maps"),
+            "license.css.map": (
+                "Software and code",
+                "Debug information and source maps",
+            ),
             "module.cts": ("Software and code", "Source code and scripts"),
             "module.tcl": ("Software and code", "Source code and scripts"),
             "module.pyx": ("Software and code", "Source code and scripts"),
@@ -1842,10 +1846,16 @@ class FolderReviewTests(unittest.TestCase):
         finally:
             book.close()
 
-    def test_relative_report_paths_preserve_archive_members_and_source_names(self) -> None:
+    def test_relative_report_paths_preserve_archive_members_and_source_names(
+        self,
+    ) -> None:
         cases = (
             ("/data/пример/文件.txt", "/data/пример", "文件.txt"),
-            ("/data/a.zip::папка/b.7z::文件.txt", "/data", "a.zip::папка/b.7z::文件.txt"),
+            (
+                "/data/a.zip::папка/b.7z::文件.txt",
+                "/data",
+                "a.zip::папка/b.7z::文件.txt",
+            ),
             ("/data/empty", "/data", "empty"),
             ("/data::source/a.zip::папка/b.txt", "/data::source", "a.zip::папка/b.txt"),
             ("/data::source", "/data::source", "."),
@@ -1859,34 +1869,62 @@ class FolderReviewTests(unittest.TestCase):
         )
         for path, root, expected in cases:
             with self.subTest(path=path, root=root):
-                self.assertEqual(folder_review.report_relative_path(path, root), expected)
+                self.assertEqual(
+                    folder_review.report_relative_path(path, root), expected
+                )
 
-    def test_report_technical_values_are_english_and_root_is_only_in_title(self) -> None:
+    def test_report_technical_values_are_english_and_root_is_only_in_title(
+        self,
+    ) -> None:
         root = self.root / "пример"
         root.mkdir()
         source = root / "文件.txt"
         source.write_bytes(b"content")
-        rows = [replace(folder_review.make_row(
-            str(source), (source.name,), 7, "Text", False,
-            properties=folder_review.file_properties(source.name, source.stat()),
-            bom=folder_review.BOM_NOT_PRESENT,
-        ), content_hash=blake3(b"content").digest()),
-            folder_review.folder_placeholder(str(root / "пусто"), ("пусто",), in_archive=False)]
+        rows = [
+            replace(
+                folder_review.make_row(
+                    str(source),
+                    (source.name,),
+                    7,
+                    "Text",
+                    False,
+                    properties=folder_review.file_properties(
+                        source.name, source.stat()
+                    ),
+                    bom=folder_review.BOM_NOT_PRESENT,
+                ),
+                content_hash=blake3(b"content").digest(),
+            ),
+            folder_review.folder_placeholder(
+                str(root / "пусто"), ("пусто",), in_archive=False
+            ),
+        ]
         output = self.root / "english.xlsx"
         folder_review.write_workbook(rows, output, str(root), full_metadata=True)
         book = load_workbook(output)
         try:
             sheet = book["folder_review"]
             self.assertEqual(sheet["B2"].value, f"Folder file inventory: {root}")
-            self.assertEqual(sum(str(root) in str(cell.value) for row in sheet for cell in row), 1)
+            self.assertEqual(
+                sum(str(root) in str(cell.value) for row in sheet for cell in row), 1
+            )
             headers = [cell.value for cell in sheet[6]]
-            records = [dict(zip(headers, row)) for row in sheet.iter_rows(min_row=7, values_only=True)]
+            records = [
+                dict(zip(headers, row))
+                for row in sheet.iter_rows(min_row=7, values_only=True)
+            ]
             self.assertNotIn("Full path", headers)
             self.assertEqual(records[0]["Relative path"], "文件.txt")
             self.assertEqual(records[0]["File name"], "文件.txt")
             self.assertEqual(records[1]["Relative path"], "пусто")
             self.assertEqual(records[1]["Inspection state"], "No inventoried files")
-            source_columns = {None, "Relative path", "File name", "Name without extension", "Level 1"}
+            source_columns = {
+                None,
+                "Relative path",
+                "File name",
+                "Name without extension",
+                "Level 1",
+            }
             for record in records:
                 for header, value in record.items():
                     if header not in source_columns and isinstance(value, str):
@@ -1998,6 +2036,85 @@ class FolderReviewTests(unittest.TestCase):
         )
         self.assertIn("Hidden", compact)
         self.assertEqual(compact, {key: full[key] for key in compact})
+
+    def test_license_notices_are_available_without_a_scan(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            folder_review.show_licenses()
+        text = output.getvalue()
+        self.assertIn("MIT License", text)
+        self.assertIn("GNU LESSER GENERAL PUBLIC LICENSE", text)
+        self.assertIn("7-Zip 26.04", text)
+
+    def test_network_apis_are_denied_before_and_after_review(self) -> None:
+        import socket
+        import urllib.request
+        import webbrowser
+
+        for operation in (
+            lambda: socket.socket(),
+            lambda: socket.getaddrinfo("example.invalid", 443),
+            lambda: urllib.request.urlopen("https://example.invalid", timeout=1),
+            lambda: webbrowser.open("https://example.invalid"),
+        ):
+            with self.assertRaises(PermissionError):
+                operation()
+        self.assertIsNone(folder_review._protected_root)
+
+    def test_urls_and_webdav_paths_are_rejected_before_filesystem_access(self) -> None:
+        for path in (
+            "https://example.invalid/data",
+            "smb://server/share",
+            r"\\server\DavWWWRoot\folder",
+            r"\\server@SSL\DavWWWRoot\folder",
+            r"\\server@80\share",
+            r"\\?\UNC\server@SSL@443\DavWWWRoot\folder",
+        ):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                folder_review.reject_web_path(path)
+        for path in (r"C:\Data", r"\\server\share\folder", "/data/local"):
+            folder_review.reject_web_path(path)
+        with mock.patch.object(folder_review.os.path, "isdir") as isdir:
+            with self.assertRaises(ValueError):
+                folder_review.review_folder(
+                    "https://example.invalid/data", str(self.root / "report.xlsx")
+                )
+            isdir.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "Linux mount metadata")
+    def test_only_smb_network_mounts_are_accepted(self) -> None:
+        for filesystem in ("nfs", "nfs4", "fuse.sshfs", "fuse.rclone", "9p", "ceph"):
+            with mock.patch.object(
+                folder_review, "linux_filesystem", return_value=filesystem
+            ):
+                with self.assertRaisesRegex(ValueError, "Only SMB"):
+                    folder_review.validate_storage_transport(str(self.root))
+                self.assertFalse(folder_review.local_storage(self.root))
+        for filesystem in ("cifs", "smb3", "ext4", "btrfs", "tmpfs", "fuseblk"):
+            with mock.patch.object(
+                folder_review, "linux_filesystem", return_value=filesystem
+            ):
+                folder_review.validate_storage_transport(str(self.root))
+                self.assertEqual(
+                    folder_review.local_storage(self.root),
+                    filesystem not in {"cifs", "smb3"},
+                )
+
+    @unittest.skipUnless(os.name == "nt", "Windows drive mappings")
+    def test_mapped_webdav_is_rejected_and_smb_is_retained(self) -> None:
+        with (
+            mock.patch.object(
+                folder_review,
+                "windows_mapped_path",
+                return_value=r"\\server@SSL\DavWWWRoot",
+            ),
+            self.assertRaisesRegex(ValueError, "WebDAV"),
+        ):
+            folder_review.validate_storage_transport(str(self.root))
+        with mock.patch.object(
+            folder_review, "windows_mapped_path", return_value=r"\\server\share"
+        ):
+            folder_review.validate_storage_transport(str(self.root))
 
     def test_runtime_denies_network_and_source_mutations(self) -> None:
         import socket
@@ -2207,7 +2324,10 @@ class FolderReviewTests(unittest.TestCase):
             values = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
             self.assertIn("UTF-8", values)
             self.assertTrue(
-                any(isinstance(value, str) and len(value) > 260 for value in [sheet["B2"].value, *values])
+                any(
+                    isinstance(value, str) and len(value) > 260
+                    for value in [sheet["B2"].value, *values]
+                )
             )
         finally:
             workbook.close()

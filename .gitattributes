@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.rar binary
+*.bin binary
+*.msg binary

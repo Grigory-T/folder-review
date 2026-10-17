@@ -10,5 +10,5 @@ if not defined UV_EXE (
     exit /b 1
 )
 echo Preparing the local environment. This setup step may access the Internet.
-"%UV_EXE%" sync --frozen --no-dev --python 3.13
+"%UV_EXE%" sync --frozen --no-dev --python 3.13.16
 exit /b %ERRORLEVEL%
