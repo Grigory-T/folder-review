@@ -2953,10 +2953,10 @@ def _report_workbook(output_path: Path):
             },
         ) as workbook:
             yield workbook
-        os.replace(temporary, extended_path(output_name))
+        os.replace(extended_path(temporary), extended_path(output_name))
     finally:
         try:
-            os.unlink(temporary)
+            os.unlink(extended_path(temporary))
         except FileNotFoundError:
             pass
         finally:
