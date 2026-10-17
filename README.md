@@ -103,8 +103,8 @@ uv sync --frozen --no-dev
 - No web requests, telemetry or runtime downloads. Existing input files remain
   read-only except the explicitly selected report. Its temporary atomic-save file
   may also be created beside it; saving changes the parent directory timestamp.
-  The application and archive/XLSX processing workspace remain local and outside
-  the inspected tree; only report output may use SMB. Links
+  The application runs locally; archive/XLSX processing workspaces stay local
+  outside the inspected tree. Only report output may use SMB. Links
   are listed without being followed. OS access-time updates/cloud hydration may
   still occur. The one-file runtime unpacks to OS temp before scanning.
 

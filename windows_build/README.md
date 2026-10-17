@@ -59,8 +59,10 @@ may supply the release's full commit ID; input hashes remain independently recor
 The adapter places default output beside the EXE, selects bundled 7-Zip for RAR,
 and escapes unprintable console diagnostics. Scanner logic is shared unchanged.
 The runtime unpacks to OS temp and is normally removed on exit. Inputs containing
-that runtime are rejected. Reports/temp files must be local and outside input;
-SMB input reads remain supported.
+that runtime are rejected. The EXE and selected report may be inside input.
+Reports may use SMB; only the selected report and its atomic-save staging file
+are permitted write exceptions. Processing workspaces stay local outside input.
+The report is excluded from the inventory. Other input writes remain blocked.
 
 Windows 11 is tested. Synthetic tests cannot cover every possible input;
 archive time limits remain cooperative rather than forcibly interrupting every

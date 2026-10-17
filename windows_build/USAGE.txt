@@ -24,7 +24,8 @@ Copy its text from the formula bar and edit the first SELECTCOLUMNS line.
 
 Scanning does not access external web services or download dependencies.
 SMB inputs remain supported; reads use operating-system file-sharing traffic.
-Input is read-only to the application. Temporary work files stay outside it.
+Input is read-only except the selected report and its atomic-save staging file.
+Archive/XLSX processing work files stay local outside input.
 OS access-time updates, cloud hydration and antivirus are outside app control.
 The EXE initially unpacks to OS temp; input containing that runtime is rejected.
 
