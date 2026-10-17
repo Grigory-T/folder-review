@@ -1847,6 +1847,8 @@ class FolderReviewTests(unittest.TestCase):
             ("/data/пример/文件.txt", "/data/пример", "文件.txt"),
             ("/data/a.zip::папка/b.7z::文件.txt", "/data", "a.zip::папка/b.7z::文件.txt"),
             ("/data/empty", "/data", "empty"),
+            ("/data::source/a.zip::папка/b.txt", "/data::source", "a.zip::папка/b.txt"),
+            ("/data::source", "/data::source", "."),
             ("/data", "/data", "."),
             ("/file.txt", "/", "file.txt"),
             (r"C:\Data\папка\文件.txt", r"c:\data", r"папка\文件.txt"),

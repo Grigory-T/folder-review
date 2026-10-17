@@ -848,8 +848,17 @@ def report_relative_path(path: str, root_folder: str) -> str:
     Only the physical path is relativized; archive member chains are retained.
     Windows roots use Windows path rules even in cross-platform report tests.
     """
-    physical, separator, members = path.partition("::")
     path_module = ntpath if ntpath.splitdrive(root_folder)[0] else os.path
+    root = path_module.normpath(root_folder)
+    # POSIX folder names may themselves contain ::. Look for archive notation
+    # only after the selected root, never inside its original spelling.
+    prefix = root.rstrip(path_module.sep) + path_module.sep
+    start = len(root) if (
+        path_module.normcase(path) == path_module.normcase(root)
+        or path_module.normcase(path).startswith(path_module.normcase(prefix))
+    ) else 0
+    physical, separator, members = path[start:].partition("::")
+    physical = path[:start] + physical
     try:
         relative = path_module.relpath(physical, root_folder)
     except ValueError:
