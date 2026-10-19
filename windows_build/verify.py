@@ -702,7 +702,7 @@ def main():
                             )
                         finally:
                             workbook.close()
-                    if name == "hashes-and-folders":
+                    if name in {"hashes-and-folders", "full-fingerprints"}:
                         workbook = load_workbook(target, read_only=True, data_only=True)
                         try:
                             sheet = workbook["folder_review"]
@@ -739,9 +739,10 @@ def main():
                                         == blake3(hash_payload).hexdigest()
                                     )
                                 elif leaf == "empty-file":
-                                    assert (
-                                        row["Content hash (BLAKE3)"]
-                                        == blake3(b"").hexdigest()
+                                    assert row["Content hash (BLAKE3)"] == (
+                                        blake3(b"").hexdigest()
+                                        if name == "full-fingerprints"
+                                        else None
                                     )
                                 if leaf == "1.2.3-cp313-cp313-win_amd64":
                                     assert not row["Extension"]
@@ -749,6 +750,25 @@ def main():
                                     assert (
                                         row["Raw suffix"] == "3-cp313-cp313-win_amd64"
                                     )
+                        finally:
+                            workbook.close()
+                    if name == "quick-inventory":
+                        workbook = load_workbook(target, read_only=True, data_only=True)
+                        try:
+                            sheet = workbook["folder_review"]
+                            headings = next(
+                                sheet.iter_rows(min_row=6, max_row=6, values_only=True)
+                            )
+                            for row in sheet.iter_rows(min_row=7, values_only=True):
+                                assert row[headings.index("Duplicate group")] is None
+                                assert (
+                                    row[headings.index("Content hash (BLAKE3)")] is None
+                                )
+                            assert status["Rows with fingerprints"] == 0
+                            assert (
+                                status["Fingerprint mode"]
+                                == "Disabled (quick inventory)"
+                            )
                         finally:
                             workbook.close()
                     if name.startswith("package-policy"):
