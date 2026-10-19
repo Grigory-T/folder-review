@@ -62,6 +62,10 @@ or metadata; PyInstaller's module-graph order otherwise varies between processes
 Reproduction requires the same runtime and native dependency inputs; their
 payload hashes are recorded for comparison.
 
+Release staging is recreated on repeat builds. Existing `dist/` is retained in
+`.build/previous-dist-*` before publication; runtime file hashes must match the
+clean rebuild exactly, including the absence of extra files.
+
 `dist/` includes the EXE, matching Python files, test/rebuild receipts and licenses.
 Build paths and machine identifiers are not included in public receipts.
 When building from a source archive without `.git`, `FOLDER_REVIEW_SOURCE_COMMIT`

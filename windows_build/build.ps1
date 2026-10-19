@@ -65,6 +65,7 @@ Invoke-Native $py @('windows_build\verify.py', '--exe', '.build\candidate\folder
 Invoke-Native $py @('windows_build\verify_portable.py', '--exe', '.build\candidate\folder-review\folder-review.exe', '--results', '.build\portable-acceptance.json')
 Invoke-Native $py @('windows_build\reproduce.py', '--exe', '.build\candidate\folder-review\folder-review.exe', '--results', '.build\reproducibility.json')
 # Publish only after all mandatory checks and release preparation succeed.
+if (Test-Path -LiteralPath '.build\release') { Remove-Item -LiteralPath '.build\release' -Recurse -Force }
 New-Item -ItemType Directory -Force -Path '.build\release' | Out-Null
 Copy-Item '.build\candidate\folder-review\folder-review.exe' '.build\release\folder-review.exe' -Force
 Copy-Item '.build\candidate\folder-review\_internal' '.build\release\_internal' -Recurse -Force
@@ -80,6 +81,10 @@ Copy-Item 'third_party' '.build\release\python\third_party' -Recurse -Force
 Invoke-Native $py @('windows_build\compliance.py', '--destination', '.build\release')
 Invoke-Native $py @('windows_build\sbom.py', '--exe', '.build\release\folder-review.exe', '--output', '.build\release\components.json')
 Invoke-Native $py @('windows_build\manifest.py', '--exe', '.build\release\folder-review.exe', '--output', '.build\release\build-manifest.json')
+if (Test-Path -LiteralPath 'dist') {
+    $previousDist = Join-Path '.build' ('previous-dist-' + [Guid]::NewGuid().ToString('N'))
+    Move-Item -LiteralPath 'dist' -Destination $previousDist
+}
 New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
 Copy-Item '.build\release\*' 'dist' -Recurse -Force
 Get-Item 'dist\folder-review.exe' | Select-Object FullName,Length

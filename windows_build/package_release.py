@@ -19,6 +19,13 @@ def main():
     manifest = json.loads((root / "build-manifest.json").read_text())
     if sha256(root / "folder-review.exe") != manifest["executable"]["sha256"]:
         raise RuntimeError("EXE identity differs from build manifest")
+    actual_runtime = {
+        p.relative_to(root).as_posix(): sha256(p)
+        for p in (root / "_internal").rglob("*")
+        if p.is_file()
+    }
+    if actual_runtime != manifest["runtime_file_sha256"]:
+        raise RuntimeError("Portable runtime file set differs from build manifest")
     for name, digest in manifest["runtime_file_sha256"].items():
         if sha256(root / name) != digest:
             raise RuntimeError(f"Portable runtime mismatch: {name}")

@@ -155,6 +155,15 @@ def main():
         == reproducibility["rebuild_sha256"]
         == sha256(args.exe)
     )
+    runtime_files = {
+        p.relative_to(args.exe.parent).as_posix(): sha256(p)
+        for p in sorted((args.exe.parent / "_internal").rglob("*"))
+        if p.is_file()
+    }
+    assert reproducibility["runtime_tree_byte_identical"]
+    assert runtime_files == reproducibility["runtime_file_sha256"], (
+        "Published runtime differs from clean rebuild"
+    )
     manifest = {
         "source_version": tomllib.loads((ROOT / "pyproject.toml").read_text())[
             "project"
@@ -210,11 +219,7 @@ def main():
             "sha256": sha256(args.exe),
         },
         "distribution": "Portable PyInstaller onedir; keep EXE and _internal together",
-        "runtime_file_sha256": {
-            p.relative_to(args.exe.parent).as_posix(): sha256(p)
-            for p in sorted((args.exe.parent / "_internal").rglob("*"))
-            if p.is_file()
-        },
+        "runtime_file_sha256": runtime_files,
         "compression": "PyInstaller standard zlib, level 9; no UPX, strip or bytecode optimization",
         "excluded_build_only_modules": ["setuptools", "pkg_resources", "packaging"],
         "payload_entries": len(archive.toc),
