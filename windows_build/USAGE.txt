@@ -4,6 +4,8 @@ Copy this folder to a writable local folder on the Windows computer.
 Double-click folder-review.exe to open the desktop window. Browse for a folder
 or paste its path, choose the report path, and click Create Excel report.
 Progress, COMPLETE/PARTIAL status and Open report folder stay in the window.
+Choose Quick inventory (no duplicate hashing), Find duplicates (filtered, default),
+or Full fingerprints (slow). Archive integrity checks remain enabled in all modes.
 Auto/manual workers and advanced metadata use the same scanner as the CLI.
 Use --cli for the terminal folder prompt; --gui alone opens the window.
 Local folders, mapped drives, and UNC paths are supported.
@@ -45,7 +47,9 @@ read buffers. Lossless size/prefix filters skip impossible duplicate candidates.
 Archive members still undergo full integrity inspection and participate in matching.
 Use --hash-all to fingerprint all readable files (additional disk/SMB traffic). Unreadable/changing
 content and links have no ID; this is not a filesystem snapshot.
-Raw BLAKE3 is available with --full-metadata.
+Raw BLAKE3 is available with --full-metadata; skipped files are blank.
+CLI: --duplicates off | filtered | all. --hash-all is an alias for all.
+Quick inventory leaves all duplicate IDs/fingerprints blank.
 
 last is ALWAYS 1. Filter Virtual row and Inspection state to select rows for analysis.
 Virtual markers: dummy.dummy (no inventoried files), deny.deny (access denied),

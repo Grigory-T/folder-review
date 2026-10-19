@@ -158,7 +158,7 @@ class PerformanceLog:
         while not self.stop.wait(self.INTERVAL):
             self.snapshot("heartbeat")
 
-    def start(self, workers, remote, hash_all=False):
+    def start(self, workers, remote, duplicates="filtered"):
         self.snapshot(
             "start",
             schema=1,
@@ -166,7 +166,7 @@ class PerformanceLog:
             runtime="exe" if getattr(sys, "frozen", False) else "python",
             storage="smb" if remote else "local",
             workers=workers,
-            hash_mode="all" if hash_all else "duplicates",
+            hash_mode=duplicates,
         )
         self.thread = Thread(
             target=self.heartbeat, name="review-diagnostics", daemon=True
@@ -508,6 +508,7 @@ class ArchiveNode:
     depth: int
     properties: FileProperties | None = None
     content_hash: bytes | None = None
+    hash_contents: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -564,6 +565,7 @@ class WorkBudget:
     deadline: float | None = None
     expanded_bytes: int = 0
     rows_claimed: int = 0
+    hash_contents: bool = True
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def check_time(self) -> None:
@@ -629,7 +631,7 @@ class RunReport:
     max_expanded_bytes: int | None
     max_archive_seconds: float | None
     max_rows: int
-    hash_all: bool = False
+    duplicate_mode: str = "filtered"
 
 
 # Path and row helpers --------------------------------------------------------
@@ -2121,7 +2123,7 @@ def archive_row(
     integrity_status: str | None = None,
 ) -> ResultRow:
     digest = None
-    if not error and integrity_status == INTEGRITY_VERIFIED:
+    if node.hash_contents and not error and integrity_status == INTEGRITY_VERIFIED:
         try:
             digest = node.content_hash or file_digest(node.source_path, node.size)
         except OSError as exc:
@@ -2229,12 +2231,13 @@ def inspect_member_stream(
     archive_type = expandable_archive_type(head, levels[-1])
     if archive_type is None:
         error = None
-        digest = blake3(head)
+        digest = blake3(head) if budget.hash_contents else None
         total = len(head)
         integrity_status = INTEGRITY_VERIFIED
         try:
             while chunk := read_counted(stream, 1024 * 1024, budget):
-                digest.update(chunk)
+                if digest is not None:
+                    digest.update(chunk)
                 total += len(chunk)
             if total != size:
                 raise OSError("Archive member size differs from fully read content")
@@ -2251,7 +2254,9 @@ def inspect_member_stream(
                 error,
                 bom=detect_bom(head) or BOM_NOT_PRESENT,
                 integrity_status=integrity_status,
-                content_hash=digest.digest() if error is None else None,
+                content_hash=digest.digest()
+                if error is None and digest is not None
+                else None,
             )
         ]
 
@@ -2286,7 +2291,14 @@ def inspect_member_stream(
         with open(temp_path, "wb") as output:
             output.write(head)
             copy_counted(stream, output, budget)
-        node = ArchiveNode(temp_path, logical_path, levels, size, depth)
+        node = ArchiveNode(
+            temp_path,
+            logical_path,
+            levels,
+            size,
+            depth,
+            hash_contents=budget.hash_contents,
+        )
         return process_archive_node(node, temp_dir, budget=budget)
     except Exception as exc:
         return [
@@ -2521,12 +2533,13 @@ class MemberCaptureIO(Py7zIO):
         self.temp_path: str | None = None
         self.output = None
         self.oversized = False
-        self.digest = blake3()
+        self.digest = blake3() if budget.hash_contents else None
 
     def write(self, chunk):
         raw = bytes(chunk)
         self.budget.consume_expanded(len(raw))
-        self.digest.update(raw)
+        if self.digest is not None:
+            self.digest.update(raw)
         if self.mode == "archive":
             self.output.write(raw)
             self.total_written += len(raw)
@@ -2747,7 +2760,7 @@ def expand_7z(
                     True,
                     bom=BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
-                    content_hash=blake3(b"").digest(),
+                    content_hash=blake3(b"").digest() if budget.hash_contents else None,
                 )
             )
         elif product is None or not product.head or product.total_written != size:
@@ -2781,7 +2794,10 @@ def expand_7z(
                 levels,
                 size,
                 node.depth + 1,
-                content_hash=product.digest.digest(),
+                content_hash=product.digest.digest()
+                if product.digest is not None
+                else None,
+                hash_contents=budget.hash_contents,
             )
             try:
                 rows.extend(process_archive_node(child, temp_dir, budget=budget))
@@ -2800,7 +2816,9 @@ def expand_7z(
                     True,
                     bom=detect_bom(bytes(product.head)) or BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
-                    content_hash=product.digest.digest(),
+                    content_hash=product.digest.digest()
+                    if product.digest is not None
+                    else None,
                 )
             )
     return retain_archive_folders(node, directories, rows, budget)
@@ -2916,6 +2934,8 @@ def process_archive_node(
 ) -> list[ResultRow]:
     if budget is None:
         budget = WorkBudget(rows_claimed=1)
+    if not budget.hash_contents and node.hash_contents:
+        node = replace(node, hash_contents=False)
     try:
         budget.check_time()
     except BudgetExceeded as exc:
@@ -3006,7 +3026,7 @@ def process_file(
             )
         ]
 
-    sample = []
+    sample = [] if budget.hash_contents else None
     file_type, bom = inspect_file(item.path, sample=sample)
     if should_expand_archive(file_type, item.levels[-1]):
         with (
@@ -3020,6 +3040,7 @@ def process_file(
                 item.size,
                 0,
                 item.properties,
+                hash_contents=budget.hash_contents,
             )
             return process_archive_node(
                 node,
@@ -3035,7 +3056,7 @@ def process_file(
     elif file_type == "ZIP container (unreadable)":
         error = "Invalid or unsupported ZIP container"
     digest = None
-    if error is None and hash_content:
+    if error is None and hash_content and budget.hash_contents:
         try:
             digest = file_digest(item.path, item.size)
         except OSError as exc:
@@ -3070,10 +3091,15 @@ def inspect_files(
     progress=None,
     *,
     hash_all=False,
+    duplicates=None,
 ) -> list[ResultRow]:
     emit = progress or print
     if budget is None:
         budget = WorkBudget()
+    mode = duplicates or ("all" if hash_all else "filtered")
+    if mode not in {"off", "filtered", "all"}:
+        raise ValueError("Unknown duplicate mode.")
+    budget.hash_contents = mode != "off"
     budget.initialize_rows(len(physical_files))
     rows: list[ResultRow] = []
     completed = 0
@@ -3086,7 +3112,7 @@ def inspect_files(
             try:
                 pending.add(
                     executor.submit(
-                        process_file, next(items), budget, hash_content=hash_all
+                        process_file, next(items), budget, hash_content=mode == "all"
                     )
                 )
             except StopIteration:
@@ -3106,7 +3132,10 @@ def inspect_files(
                 try:
                     pending.add(
                         executor.submit(
-                            process_file, next(items), budget, hash_content=hash_all
+                            process_file,
+                            next(items),
+                            budget,
+                            hash_content=mode == "all",
                         )
                     )
                 except StopIteration:
@@ -3132,7 +3161,7 @@ def inspect_files(
                 last_print = now
 
     rows.sort(key=lambda row: row.full_path.casefold())
-    if not hash_all:
+    if mode == "filtered":
         hash_duplicate_candidates(rows, physical_files, workers, progress)
     return rows
 
@@ -3851,7 +3880,9 @@ def write_workbook(
             ("Virtual rows", sum(row.is_virtual for row in rows)),
             (
                 "Content fingerprints",
-                "BLAKE3-256 of complete contents. Lossless size/prefix filters skip ordinary files that cannot be duplicates unless --hash-all is selected; archive leaves are hashed during integrity inspection. Only repeated contents receive a Duplicate group ID, consecutive from 1 within this report. Unique, virtual and unhashed rows have blank IDs.",
+                "Disabled: Quick inventory does not generate fingerprints or duplicate IDs. Archive integrity checks remain enabled."
+                if report.duplicate_mode == "off"
+                else "BLAKE3-256 of complete contents. Lossless size/prefix filters skip ordinary files that cannot be duplicates unless --hash-all is selected; archive leaves are hashed during integrity inspection. Only repeated contents receive a Duplicate group ID, consecutive from 1 within this report. Unique, virtual and unhashed rows have blank IDs.",
             ),
             (
                 "Rows with fingerprints",
@@ -3862,9 +3893,11 @@ def write_workbook(
             ("Duplicate file rows", sum(content_counts[key] for key in content_groups)),
             (
                 "Fingerprint mode",
-                "All readable files"
-                if report.hash_all
-                else "Duplicate candidates (size/prefix)",
+                {
+                    "off": "Disabled (quick inventory)",
+                    "filtered": "Duplicate candidates (size/prefix)",
+                    "all": "All readable files",
+                }[report.duplicate_mode],
             ),
         ]
         for label, value in summary_rows:
@@ -4109,10 +4142,19 @@ def parse_args(argv=None) -> argparse.Namespace:
         action="store_true",
         help="Include diagnostic link, permission, Windows-attribute and st_* columns",
     )
-    parser.add_argument(
+    duplicates = parser.add_mutually_exclusive_group()
+    duplicates.add_argument(
+        "--duplicates",
+        choices=("off", "filtered", "all"),
+        default="filtered",
+        help="off: quick inventory; filtered: exact duplicate candidates (default); all: full fingerprints (slow)",
+    )
+    duplicates.add_argument(
         "--hash-all",
-        action="store_true",
-        help="Hash all readable files, including unique-size files (more SMB I/O)",
+        action="store_const",
+        const="all",
+        dest="duplicates",
+        help="Alias for --duplicates all (more SMB I/O)",
     )
     parser.add_argument(
         "--workers",
@@ -4238,7 +4280,7 @@ def performance_log(args, root: str, progress=None):
         stream = open(extended_path(path), "x", encoding="utf-8")  # noqa: SIM115 -- PerformanceLog owns and closes the stream
         log = PerformanceLog(stream)
         _performance_log = log
-        log.start(args.workers, not local_storage(root), args.hash_all)
+        log.start(args.workers, not local_storage(root), args.duplicates)
     except (OSError, ValueError, RuntimeError):
         _performance_log = None
         if log is not None:
@@ -4276,12 +4318,21 @@ def performance_log(args, root: str, progress=None):
 
 
 def review_folder(
-    root: str, output: str, workers="auto", full_metadata=False, progress=None
+    root: str,
+    output: str,
+    workers="auto",
+    full_metadata=False,
+    progress=None,
+    *,
+    duplicates="filtered",
 ) -> int:
     """Shared scanner entry for desktop clients; no global argv/stdout changes."""
     args = parse_args([])
     args.workers = worker_count(str(workers))
     args.full_metadata = bool(full_metadata)
+    if duplicates not in {"off", "filtered", "all"}:
+        raise ValueError("Unknown duplicate mode.")
+    args.duplicates = duplicates
     return execute_review(
         args, pasted_path(root), Path(absolute_path(pasted_path(output))), progress
     )
@@ -4324,6 +4375,7 @@ def scan_and_report(
     started_at = local_now()
     emit(f"Scanning: {root_folder}")
     emit(f"Workers: {args.workers}")
+    emit(f"Duplicate mode: {args.duplicates}")
     if _performance_log is not None:
         _performance_log.set_phase("enumeration")
     physical_files, stats = scan_tree(
@@ -4366,7 +4418,11 @@ def scan_and_report(
     if _performance_log is not None:
         _performance_log.set_phase("inspection")
     rows = inspect_files(
-        physical_files, args.workers, budget, progress=progress, hash_all=args.hash_all
+        physical_files,
+        args.workers,
+        budget,
+        progress=progress,
+        duplicates=args.duplicates,
     )
     emit(f"Logical file rows: {len(rows):,}")
 
@@ -4387,7 +4443,7 @@ def scan_and_report(
         max_expanded_bytes=max_expanded_bytes,
         max_archive_seconds=max_archive_seconds,
         max_rows=args.max_rows,
-        hash_all=args.hash_all,
+        duplicate_mode=args.duplicates,
     )
     emit("Writing Excel workbook...")
     if _performance_log is not None:

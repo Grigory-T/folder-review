@@ -18,6 +18,11 @@ CARD = "#FFFFFF"
 TEXT = "#17212F"
 MUTED = "#586574"
 ACTION_WIDTH = 20
+DUPLICATE_MODES = {
+    "Quick inventory (no duplicates)": "off",
+    "Find duplicates (filtered)": "filtered",
+    "Full fingerprints (slow)": "all",
+}
 
 
 class Application:
@@ -30,6 +35,7 @@ class Application:
         self.folder = tk.StringVar()
         self.output = tk.StringVar(value=str(Path(directory) / core.OUTPUT_FILE))
         self.workers = tk.StringVar(value="auto")
+        self.duplicate_mode = tk.StringVar(value="Find duplicates (filtered)")
         self.full_metadata = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="Choose a folder to begin.")
         self.report_name = tk.StringVar(value="No report created in this session.")
@@ -99,7 +105,7 @@ class Application:
         card = ttk.Frame(border, style="Card.TFrame", padding=14)
         card.pack(fill="both", expand=True)
         card.columnconfigure(1, weight=1)
-        card.rowconfigure(9, weight=1)
+        card.rowconfigure(10, weight=1)
         heading = ttk.Frame(card, style="Card.TFrame")
         heading.grid(row=0, column=0, columnspan=3, sticky="ew")
         ttk.Label(heading, text="1", style="Step.Card.TLabel").pack(
@@ -162,20 +168,31 @@ class Application:
             text="Automatic by default; manual override available.",
             style="Muted.Card.TLabel",
         ).pack(side="left", padx=(12, 0))
+        ttk.Label(card, text="Duplicates", style="Card.TLabel").grid(
+            row=5, column=0, sticky="w", pady=(10, 0)
+        )
+        self.duplicate_box = ttk.Combobox(
+            card,
+            textvariable=self.duplicate_mode,
+            values=tuple(DUPLICATE_MODES),
+            state="readonly",
+            width=32,
+        )
+        self.duplicate_box.grid(row=5, column=1, columnspan=2, sticky="w", pady=(10, 0))
         self.metadata_box = ttk.Checkbutton(
             card,
             text="Include advanced filesystem metadata",
             variable=self.full_metadata,
             style="Card.TCheckbutton",
         )
-        self.metadata_box.grid(row=5, column=1, columnspan=2, sticky="w", pady=(10, 0))
+        self.metadata_box.grid(row=6, column=1, columnspan=2, sticky="w", pady=(10, 0))
         ttk.Label(
             card,
             text="An existing report at this path will be replaced after a successful save.",
             style="Muted.Card.TLabel",
-        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
         actions = ttk.Frame(card, style="Card.TFrame")
-        actions.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(12, 0))
         actions.columnconfigure(0, weight=1)
         self.status_label = ttk.Label(
             actions, textvariable=self.status, style="Card.TLabel"
@@ -198,7 +215,7 @@ class Application:
         )
         self.start_button.grid(row=0, column=1, sticky="e")
         self.progress = ttk.Progressbar(card, mode="indeterminate")
-        self.progress.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.progress.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         self.progress.grid_remove()
         self.log = ScrolledText(
             card,
@@ -211,7 +228,7 @@ class Application:
             foreground=MUTED,
             relief="flat",
         )
-        self.log.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        self.log.grid(row=10, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
         footer = ttk.Frame(outer, style="App.TFrame")
         footer.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         footer.columnconfigure(0, weight=1)
@@ -286,6 +303,7 @@ class Application:
         for entry in (self.folder_entry, self.output_entry):
             entry.configure(state="disabled" if self.busy else "normal")
         self.worker_box.configure(state="disabled" if self.busy else "readonly")
+        self.duplicate_box.configure(state="disabled" if self.busy else "readonly")
         for button in (self.browse_button, self.save_button, self.metadata_box):
             button.state(["disabled" if self.busy else "!disabled"])
         ready = (
@@ -327,6 +345,7 @@ class Application:
             return
         folder, output = self.folder.get(), self.output.get()
         workers, metadata = self.workers.get(), self.full_metadata.get()
+        duplicates = DUPLICATE_MODES[self.duplicate_mode.get()]
         self.busy = True
         self.status.set("Reading folder and preparing the report…")
         self.log.configure(state="normal")
@@ -344,6 +363,7 @@ class Application:
                     workers,
                     metadata,
                     lambda text: self.messages.put(("progress", text)),
+                    duplicates=duplicates,
                 )
                 self.messages.put(
                     ("done", (result, core.absolute_path(core.pasted_path(output))))

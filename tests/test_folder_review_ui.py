@@ -13,7 +13,7 @@ from unittest import mock
 from openpyxl import load_workbook
 
 import folder_review as core
-from folder_review_ui import Application
+from folder_review_ui import DUPLICATE_MODES, Application
 
 
 class DesktopTests(unittest.TestCase):
@@ -86,6 +86,34 @@ class DesktopTests(unittest.TestCase):
         self.assertIn("PARTIAL", self.app.status.get())
         self.assertIsNotNone(self.app.last_report)
         self.dialog.assert_not_called()
+
+    def test_all_duplicate_modes_reach_the_shared_scanner(self):
+        (self.root / "first.txt").write_bytes(b"identical contents")
+        (self.root / "second.txt").write_bytes(b"identical contents")
+        self.app.folder.set(str(self.root))
+        self.assertEqual(DUPLICATE_MODES[self.app.duplicate_mode.get()], "filtered")
+        for label, mode in DUPLICATE_MODES.items():
+            with self.subTest(mode=mode):
+                self.app.duplicate_mode.set(label)
+                self.app.start()
+                self.assertEqual(str(self.app.duplicate_box.cget("state")), "disabled")
+                self.wait()
+                self.assertEqual(str(self.app.duplicate_box.cget("state")), "readonly")
+                book = load_workbook(self.app.last_report, read_only=True)
+                try:
+                    status = {
+                        row[0]: row[1]
+                        for row in book["scan_status"].iter_rows(values_only=True)
+                        if row[0] is not None
+                    }
+                    self.assertEqual(
+                        status["Duplicate groups"], 0 if mode == "off" else 1
+                    )
+                    self.assertEqual(
+                        status["Rows with fingerprints"], 0 if mode == "off" else 2
+                    )
+                finally:
+                    book.close()
 
     def test_failure_restores_controls_and_preserves_last_report(self):
         self.app.folder.set(str(self.root))

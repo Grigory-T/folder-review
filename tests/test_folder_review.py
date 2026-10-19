@@ -235,9 +235,9 @@ class FolderReviewTests(unittest.TestCase):
             next(row for row in rows if row.leaf_name == unique.name).content_hash
         )
         args = folder_review.parse_args(["--hash-all"])
-        self.assertTrue(args.hash_all)
-        self.assertFalse(folder_review.parse_args([]).hash_all)
-        full = folder_review.inspect_files(items, 1, hash_all=args.hash_all)
+        self.assertEqual(args.duplicates, "all")
+        self.assertEqual(folder_review.parse_args([]).duplicates, "filtered")
+        full = folder_review.inspect_files(items, 1, duplicates=args.duplicates)
         self.assertEqual(
             next(row for row in full if row.leaf_name == unique.name).content_hash,
             blake3(unique.read_bytes()).digest(),
@@ -280,6 +280,65 @@ class FolderReviewTests(unittest.TestCase):
         digest.assert_not_called()
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(row.content_hash is None for row in rows))
+
+    def test_quick_mode_skips_hashing_but_retains_nested_archive_integrity(self):
+        source = self.root / "input"
+        source.mkdir()
+        (source / "a.txt").write_bytes(b"same")
+        (source / "b.txt").write_bytes(b"same")
+        zipped = self.make_zip(
+            source / "content.zip", {"member.txt": b"same", "empty.txt": b""}
+        )
+        self.make_7z(
+            source / "content.7z", {"inside.zip": zipped, "member.txt": b"same"}
+        )
+        self.make_zip(source / "empty.zip", {})
+        self.make_7z(source / "empty.7z", {})
+        items = folder_review.scan_tree(str(source), set(), 2)[0]
+        with mock.patch.object(
+            folder_review,
+            "blake3",
+            side_effect=AssertionError("Quick mode must not hash"),
+        ):
+            quick = folder_review.inspect_files(items, 2, duplicates="off")
+        filtered = folder_review.inspect_files(items, 2)
+        self.assertEqual(
+            [(r.full_path, r.content_type, r.integrity_status, r.error) for r in quick],
+            [
+                (r.full_path, r.content_type, r.integrity_status, r.error)
+                for r in filtered
+            ],
+        )
+        self.assertTrue(
+            all(row.content_hash is None and row.prefix_hash is None for row in quick)
+        )
+        self.assertTrue(
+            any(
+                row.integrity_status == folder_review.INTEGRITY_VERIFIED
+                for row in quick
+            )
+        )
+        self.assertTrue(all(row.error is None for row in quick))
+        self.assertEqual(
+            folder_review.parse_args(["--duplicates", "off"]).duplicates, "off"
+        )
+
+    def test_quick_mode_still_reports_bad_archive_crc(self):
+        path = self.root / "bad.zip"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("member.txt", b"A" * 65536)
+        data = bytearray(path.read_bytes())
+        central = data.index(b"PK\x01\x02")
+        crc = struct.unpack_from("<I", data, central + 16)[0] ^ 1
+        struct.pack_into("<I", data, central + 16, crc)
+        struct.pack_into("<I", data, 14, crc)
+        path.write_bytes(data)
+        rows = folder_review.inspect_files(
+            folder_review.scan_tree(str(self.root), set(), 1)[0], 1, duplicates="off"
+        )
+        self.assertIsNotNone(rows[0].error)
+        self.assertEqual(rows[0].integrity_status, folder_review.INTEGRITY_ERROR)
+        self.assertIsNone(rows[0].content_hash)
 
     def test_virtual_reason_markers_are_filterable_and_last_is_always_one(self) -> None:
         rows = [

@@ -19,7 +19,10 @@ local folder and run it, or use:
 Double-click `folder-review.exe` to open the desktop window. Browse for a folder
 or paste its path, choose the report location, and click **Create Excel report**.
 The window shows progress and COMPLETE/PARTIAL status, with an action to open the
-report folder. Worker and advanced-metadata options use the same scanner as CLI.
+report folder. Choose **Quick inventory** (no duplicate hashing), **Find duplicates**
+(filtered, default), or **Full fingerprints** (fully reads every candidate/leaf,
+potentially slow on SMB). All modes keep archive integrity checks enabled.
+Worker and advanced-metadata options use the same scanner as CLI.
 The desktop window is also the default for Python/RUN.bat; Python needs Tkinter
 in its installation. The standalone EXE bundles Tcl/Tk.
 
@@ -73,6 +76,10 @@ uv sync --frozen --no-dev
   This is not a filesystem snapshot. Raw BLAKE3 is available with `--full-metadata`,
   with blanks for skipped files. Use `--hash-all` to fingerprint every readable
   file, including unique files; this can be much slower on large SMB datasets.
+  CLI modes are `--duplicates off`, `--duplicates filtered` (default) and
+  `--duplicates all`; `--hash-all` is an alias for the last option. Quick mode
+  leaves duplicate IDs and fingerprints blank, including archive members, while
+  retaining the same archive integrity checks and PARTIAL diagnostics.
 - **`last` is always 1**, including virtual rows. Filter `Virtual row`
   and `Inspection state` to select the rows to count. Virtual leaves are `dummy.dummy`
   (no inventoried files), `deny.deny` (access denied), `password.password`,
