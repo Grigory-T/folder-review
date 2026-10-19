@@ -11,11 +11,14 @@ if (-not (Test-Path -LiteralPath $archive)) {
 if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pins.sha256) {
     throw 'Python archive hash mismatch. Build stopped.'
 }
-if (-not (Test-Path -LiteralPath $runtime)) {
-    New-Item -ItemType Directory $runtime | Out-Null
-    & tar.exe -xf $archive -C $runtime
-    if ($LASTEXITCODE -ne 0) { throw 'Pinned Python extraction failed.' }
+# Build tools can regenerate standard-library bytecode. Restore this generated
+# subtree from the verified cache on every build, including repeated builds.
+if (Test-Path -LiteralPath $runtime) {
+    Remove-Item -LiteralPath $runtime -Recurse -Force
 }
+New-Item -ItemType Directory $runtime | Out-Null
+& tar.exe -xf $archive -C $runtime
+if ($LASTEXITCODE -ne 0) { throw 'Pinned Python extraction failed.' }
 # Check the executable and interpreter DLL before launching either.
 foreach ($entry in $pins.core_sha256.PSObject.Properties) {
     $file = Join-Path $runtime ('python\' + $entry.Name)

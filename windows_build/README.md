@@ -24,6 +24,7 @@ the finished application makes no web requests or runtime downloads.
 then runs [folder-review.spec](folder-review.spec) with PyInstaller **6.22.0**.
 [python-pins.json](python-pins.json) pins the exact runtime archive URL/hash.
 [prepare-runtime.ps1](prepare-runtime.ps1) downloads it only during building,
+restores the generated runtime subtree from that verified archive on every build,
 checks its hash and core binaries, and [verify_runtime.py](verify_runtime.py)
 compares every installed runtime file with that archive. uv receives this exact
 interpreter path; it does not choose another Python download.
