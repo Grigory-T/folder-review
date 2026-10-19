@@ -62,13 +62,14 @@ try {
 } finally { Remove-Item Env:FOLDER_REVIEW_BUILD_TESTS -ErrorAction SilentlyContinue }
 Invoke-Native (Join-Path $root '.build\validation\folder-review-tests\folder-review-tests.exe') @('--results', (Join-Path $root '.build\frozen-tests.json'))
 Invoke-Native $py @('windows_build\verify.py', '--exe', '.build\candidate\folder-review\folder-review.exe', '--results', '.build\verification.json')
+Invoke-Native $py @('windows_build\verify_portable.py', '--exe', '.build\candidate\folder-review\folder-review.exe', '--results', '.build\portable-acceptance.json')
 Invoke-Native $py @('windows_build\reproduce.py', '--exe', '.build\candidate\folder-review\folder-review.exe', '--results', '.build\reproducibility.json')
 # Publish only after all mandatory checks and release preparation succeed.
 New-Item -ItemType Directory -Force -Path '.build\release' | Out-Null
 Copy-Item '.build\candidate\folder-review\folder-review.exe' '.build\release\folder-review.exe' -Force
 Copy-Item '.build\candidate\folder-review\_internal' '.build\release\_internal' -Recurse -Force
 Copy-Item '.build\verification.json' '.build\release\verification.json' -Force
-Copy-Item '.build\source-tests.json', '.build\frozen-tests.json', '.build\reproducibility.json' '.build\release' -Force
+Copy-Item '.build\source-tests.json', '.build\frozen-tests.json', '.build\reproducibility.json', '.build\portable-acceptance.json' '.build\release' -Force
 Copy-Item 'LICENSE', 'SECURITY.md', 'windows_build\THIRD-PARTY-NOTICES.txt', 'windows_build\USAGE.txt' '.build\release' -Force
 Copy-Item (Join-Path $SevenZipDir 'License.txt') '.build\release\7zip-license.txt' -Force
 # Both deliveries come from these same inputs; manifest preparation verifies

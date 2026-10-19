@@ -15,8 +15,8 @@ def configure_frozen_application(app) -> None:
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="backslashreplace")
 
-    # run() derives its default output folder from __file__. In a onefile
-    # process that would otherwise point into disposable extracted files.
+    # Keep source resource lookups beside the EXE, while bundled resources
+    # are loaded from the standard onedir runtime under _internal.
     app.__file__ = sys.executable
     bundled = Path(sys._MEIPASS) / "7z.exe"
     if not bundled.is_file():

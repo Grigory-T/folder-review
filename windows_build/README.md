@@ -43,6 +43,9 @@ The build publishes `dist/` only after:
 - Source and frozen regression suites pass, with unexpected skips rejected.
 - [verify.py](verify.py) compares embedded scanner bytecode with current source,
   checks bundled extractor hashes, and compares complete Python/EXE workbooks.
+- [verify_portable.py](verify_portable.py) checks external temp/profile canaries,
+  whole-folder relocation, self-scans, output restrictions, support junctions and
+  an unwritable tool folder on synthetic owned data.
 - [reproduce.py](reproduce.py) rebuilds from a fresh source copy in a different
   directory and requires an identical EXE and every _internal file SHA-256.
 - [sbom.py](sbom.py) verifies wheel code against RECORD and requires a known
