@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import json
 import ntpath
 import os
 import re
@@ -16,13 +17,15 @@ import sys
 import tempfile
 import time
 import zipfile
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import wraps
 from itertools import chain, islice
 from pathlib import Path
-from threading import Lock, Semaphore
+from threading import Event, Lock, Semaphore, Thread
 
 # A normal source launch must not create caches beside inspected source files.
 sys.dont_write_bytecode = True
@@ -56,6 +59,154 @@ from xlsxwriter.utility import xl_col_to_name
 ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 
 OUTPUT_FILE = "folder-review.xlsx"
+
+# Increment with the release version; included in neutral diagnostic logs.
+TOOL_VERSION = "0.17.0"
+
+
+class PerformanceLog:
+    """Aggregate diagnostics only: never accept input names, paths or messages."""
+
+    INTERVAL = 5
+    MAX_BYTES = 8 * 1024 * 1024
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.started = time.monotonic()
+        self.cpu_started = time.process_time()
+        self.phase = "starting"
+        self.counters = {}
+        self.operations = {}
+        self.active = {}
+        self.lock = Lock()
+        self.stop = Event()
+        self.thread = None
+        self.bytes_written = 0
+        self.failed = False
+        self.exit_code = 1
+
+    def count(self, name, amount=1):
+        with self.lock:
+            self.counters[name] = self.counters.get(name, 0) + amount
+
+    @contextmanager
+    def operation(self, name):
+        token = object()
+        started = time.monotonic()
+        with self.lock:
+            self.active.setdefault(name, {})[token] = started
+        failed = True
+        try:
+            yield
+            failed = False
+        finally:
+            elapsed = time.monotonic() - started
+            with self.lock:
+                del self.active[name][token]
+                values = self.operations.setdefault(name, [0, 0.0, 0.0, 0])
+                values[0] += 1
+                values[1] += elapsed
+                values[2] = max(values[2], elapsed)
+                values[3] += int(failed)
+
+    def snapshot(self, event, **fields):
+        # All callers pass fixed tool-owned names and numeric values. In
+        # particular, exception text/tracebacks and argv are never accepted.
+        with self.lock:
+            now = time.monotonic()
+            operations = {}
+            for name in self.operations.keys() | self.active.keys():
+                completed, total, longest, errors = self.operations.get(
+                    name, (0, 0, 0, 0)
+                )
+                active = self.active.get(name, {})
+                operations[name] = {
+                    "completed": completed,
+                    "errors": errors,
+                    "active": len(active),
+                    "total_s": round(total, 3),
+                    "max_s": round(longest, 3),
+                    "oldest_active_s": round(now - min(active.values()), 3)
+                    if active
+                    else 0,
+                }
+            record = {
+                "event": event,
+                "elapsed_s": round(now - self.started, 3),
+                "phase": self.phase,
+                "cpu_s": round(time.process_time() - self.cpu_started, 3),
+                "counters": dict(self.counters),
+                "operations": operations,
+                **fields,
+            }
+            text = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+            # Reserve space for the final record even on exceptionally long runs.
+            if self.bytes_written >= self.MAX_BYTES and event == "heartbeat":
+                return
+            try:
+                self.stream.write(text)
+                self.stream.flush()
+                self.bytes_written += len(text)
+            except OSError:
+                self.failed = True  # logging must not discard a usable report
+
+    def set_phase(self, phase):
+        self.phase = phase
+        self.snapshot("phase")
+
+    def heartbeat(self):
+        while not self.stop.wait(self.INTERVAL):
+            self.snapshot("heartbeat")
+
+    def start(self, workers, remote, hash_all=False):
+        self.snapshot(
+            "start",
+            schema=1,
+            tool_version=TOOL_VERSION,
+            runtime="exe" if getattr(sys, "frozen", False) else "python",
+            storage="smb" if remote else "local",
+            workers=workers,
+            hash_mode="all" if hash_all else "duplicates",
+        )
+        self.thread = Thread(
+            target=self.heartbeat, name="review-diagnostics", daemon=True
+        )
+        self.thread.start()
+
+    def finish(self, exit_code):
+        self.stop.set()
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join()
+        self.snapshot("finish", exit_code=exit_code)
+        try:
+            self.stream.close()
+        except OSError:
+            self.failed = True
+
+
+_performance_log: PerformanceLog | None = None
+
+
+def diagnostic_count(name, amount=1):
+    log = _performance_log
+    if log is not None:
+        log.count(name, amount)
+
+
+def diagnostic_operation(name):
+    def decorate(function):
+        @wraps(function)
+        def measured(*args, **kwargs):
+            log = _performance_log
+            if log is None:
+                return function(*args, **kwargs)
+            with log.operation(name):
+                return function(*args, **kwargs)
+
+        return measured
+
+    return decorate
+
 
 # Diagnostic metadata remains available through --full-metadata. The default
 # inventory keeps fields useful for an ordinary content/folder review.
@@ -379,6 +530,8 @@ class ResultRow:
     content_hash: bytes | None = None
     virtual_folder: bool = False
     virtual_reason: str | None = None
+    # Internal lossless prefilter only; never exported or used as proof of a duplicate.
+    prefix_hash: bytes | None = None
 
     @property
     def is_virtual(self) -> bool:
@@ -429,6 +582,7 @@ class WorkBudget:
                     f"Expanded-data budget exceeded ({self.max_expanded_bytes:,} bytes)"
                 )
             self.expanded_bytes = total
+            diagnostic_count("archive_expanded_bytes", amount)
 
     def ensure_declared_size(self, amount: int) -> None:
         with self._lock:
@@ -475,6 +629,7 @@ class RunReport:
     max_expanded_bytes: int | None
     max_archive_seconds: float | None
     max_rows: int
+    hash_all: bool = False
 
 
 # Path and row helpers --------------------------------------------------------
@@ -520,6 +675,7 @@ def resolved_path(path: str | os.PathLike[str]) -> str:
     return os.path.normcase(regular_path(os.path.realpath(extended_path(path))))
 
 
+@diagnostic_operation("safety_check")
 def path_within(path: str | os.PathLike[str], root: str) -> bool:
     """Include junction/symlink and Windows mapped/UNC aliases of the root."""
     candidate = resolved_path(path)
@@ -1426,6 +1582,7 @@ def make_row(
     content_hash: bytes | None = None,
     virtual_folder: bool = False,
     virtual_reason: str | None = None,
+    prefix_hash: bytes | None = None,
 ) -> ResultRow:
     leaf_name = levels[-1]
     content_type = refine_named_content_type(leaf_name, content_type)
@@ -1448,6 +1605,7 @@ def make_row(
         content_hash=content_hash,
         virtual_folder=virtual_folder,
         virtual_reason=virtual_reason,
+        prefix_hash=prefix_hash,
     )
 
 
@@ -1479,12 +1637,13 @@ def folder_placeholder(
     )
 
 
+@diagnostic_operation("hash")
 def file_digest(path: str, expected_size: int | None = None) -> bytes:
     """Hash complete bytes, rejecting observable changes during the read."""
     digest = blake3()
     total = 0
     with open(extended_path(path), "rb") as stream:
-        before = os.fstat(stream.fileno())
+        before = source_stat(stream)
         if expected_size is not None and before.st_size != expected_size:
             raise OSError(
                 "File changed during inspection; Content fingerprint was not retained"
@@ -1497,10 +1656,11 @@ def file_digest(path: str, expected_size: int | None = None) -> bytes:
             if not count:
                 break
             digest.update(view[:count])
+            diagnostic_count("hash_bytes", count)
             total += count
             remaining -= count
         grew = bool(stream.read(1))
-        after = os.fstat(stream.fileno())
+        after = source_stat(stream)
     fields = ("st_size", "st_mtime_ns", "st_ctime_ns", "st_ino", "st_dev")
     if (
         grew
@@ -1512,6 +1672,11 @@ def file_digest(path: str, expected_size: int | None = None) -> bytes:
             "File changed during inspection; Content fingerprint was not retained"
         )
     return digest.digest()
+
+
+@diagnostic_operation("source_metadata")
+def source_stat(stream):
+    return os.fstat(stream.fileno())
 
 
 # Content detection ----------------------------------------------------------
@@ -1734,10 +1899,14 @@ def refine_grouping_content(name: str, data: bytes, content: str) -> str:
     return content
 
 
-def inspect_file(file_path: str) -> tuple[str, str | None]:
+@diagnostic_operation("classify")
+def inspect_file(file_path: str, *, sample=None) -> tuple[str, str | None]:
     try:
         with open(extended_path(file_path), "rb", buffering=0) as file:
             head = file.read(MAGIC_READ_SIZE)
+            diagnostic_count("prefix_bytes", len(head))
+            if sample is not None:
+                sample.append(head)
     except OSError:
         return "Unreadable", None
 
@@ -1765,6 +1934,7 @@ def link_target(path: str) -> str | None:
         return None
 
 
+@diagnostic_operation("enumerate_folder")
 def scan_folder(
     folder_path: str,
     levels: tuple[str, ...],
@@ -1902,7 +2072,7 @@ def scan_tree(
         pending = {executor.submit(scan_folder, root_folder, (), excluded_paths)}
 
         while pending:
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            done, pending = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
             for future in done:
                 subfolders, files, diagnostics, skipped_folder = future.result()
                 stats.folders += 1
@@ -1912,6 +2082,15 @@ def scan_tree(
                 )
                 stats.diagnostics.extend(diagnostics)
                 all_files.extend(files)
+                diagnostic_count("folders_completed")
+                diagnostic_count(
+                    "physical_items_found",
+                    sum(not item.virtual_folder for item in files),
+                )
+                diagnostic_count(
+                    "folder_markers_found", sum(item.virtual_folder for item in files)
+                )
+                diagnostic_count("physical_bytes", sum(item.size for item in files))
                 for subfolder_path, levels in subfolders:
                     pending.add(
                         executor.submit(
@@ -2726,6 +2905,7 @@ def expand_rar(
     return retain_archive_folders(node, directories, rows, budget)
 
 
+@diagnostic_operation("archive")
 def process_archive_node(
     node: ArchiveNode,
     temp_dir: str,
@@ -2792,6 +2972,8 @@ def process_archive_node(
 def process_file(
     item: PhysicalFile,
     budget: WorkBudget | None = None,
+    *,
+    hash_content: bool = True,
 ) -> list[ResultRow]:
     if budget is None:
         budget = WorkBudget(rows_claimed=1)
@@ -2824,7 +3006,8 @@ def process_file(
             )
         ]
 
-    file_type, bom = inspect_file(item.path)
+    sample = []
+    file_type, bom = inspect_file(item.path, sample=sample)
     if should_expand_archive(file_type, item.levels[-1]):
         with (
             HEAVY_ARCHIVE_SLOTS,
@@ -2852,7 +3035,7 @@ def process_file(
     elif file_type == "ZIP container (unreadable)":
         error = "Invalid or unsupported ZIP container"
     digest = None
-    if error is None:
+    if error is None and hash_content:
         try:
             digest = file_digest(item.path, item.size)
         except OSError as exc:
@@ -2871,6 +3054,11 @@ def process_file(
             link_type=item.link_type,
             link_target=item.link_target,
             content_hash=digest,
+            prefix_hash=(
+                blake3(sample[0]).digest()
+                if sample and len(sample[0]) == min(item.size, MAGIC_READ_SIZE)
+                else None
+            ),
         )
     ]
 
@@ -2880,6 +3068,8 @@ def inspect_files(
     workers: int = DEFAULT_WORKERS,
     budget: WorkBudget | None = None,
     progress=None,
+    *,
+    hash_all=False,
 ) -> list[ResultRow]:
     emit = progress or print
     if budget is None:
@@ -2894,30 +3084,148 @@ def inspect_files(
         pending = set()
         for _ in range(workers * 2):
             try:
-                pending.add(executor.submit(process_file, next(items), budget))
+                pending.add(
+                    executor.submit(
+                        process_file, next(items), budget, hash_content=hash_all
+                    )
+                )
             except StopIteration:
                 break
 
         while pending:
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            done, pending = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
             for future in done:
-                rows.extend(future.result())
+                result = future.result()
+                rows.extend(result)
                 completed += 1
+                diagnostic_count("physical_items_completed")
+                diagnostic_count("logical_rows", len(result))
+                diagnostic_count(
+                    "row_errors", sum(row.error is not None for row in result)
+                )
                 try:
-                    pending.add(executor.submit(process_file, next(items), budget))
+                    pending.add(
+                        executor.submit(
+                            process_file, next(items), budget, hash_content=hash_all
+                        )
+                    )
                 except StopIteration:
                     pass
 
             now = time.monotonic()
             if now - last_print >= 10:
+                detail = ""
+                log = _performance_log
+                if log is not None:
+                    with log.lock:
+                        hashed = log.counters.get("hash_bytes", 0) / (1024**2)
+                        expanded = log.counters.get("archive_expanded_bytes", 0) / (
+                            1024**2
+                        )
+                    detail = (
+                        f" | hashed: {hashed:,.1f} MiB | expanded: {expanded:,.1f} MiB"
+                    )
                 emit(
                     f"Inspected physical files: {completed:,} / {len(physical_files):,} | "
-                    f"logical rows: {len(rows):,}"
+                    f"logical rows: {len(rows):,}{detail}"
                 )
                 last_print = now
 
     rows.sort(key=lambda row: row.full_path.casefold())
+    if not hash_all:
+        hash_duplicate_candidates(rows, physical_files, workers, progress)
     return rows
+
+
+def hash_duplicate_candidates(rows, physical_files, workers, progress=None):
+    """Lossless size/prefix filters; archive leaves participate conservatively."""
+    emit = progress or print
+    eligible = lambda row: (
+        not row.is_virtual
+        and row.item_type in {"File", "Archive member"}
+        and row.link_type is None
+        and row.error is None
+    )
+    sizes = Counter(row.size for row in rows if eligible(row))
+    prefixes = Counter(
+        (row.size, row.prefix_hash)
+        for row in rows
+        if eligible(row) and row.prefix_hash is not None
+    )
+    # Archive streams already have full hashes. Without a prefix for them,
+    # retain every physical candidate of the same size, avoiding missed matches.
+    unknown_prefix_sizes = {
+        row.size for row in rows if eligible(row) and row.prefix_hash is None
+    }
+    physical = {
+        normalized_key(item.path): item
+        for item in physical_files
+        if item.inspect_content and not item.virtual_folder
+    }
+    candidates = []
+    skipped = 0
+    skipped_prefix = 0
+    for index, row in enumerate(rows):
+        if not eligible(row) or row.content_hash is not None or row.in_archive != "No":
+            continue
+        item = physical.get(normalized_key(row.full_path))
+        if item is None:
+            continue
+        if sizes[row.size] <= 1:
+            skipped += 1
+        elif (
+            row.prefix_hash is None
+            or row.size in unknown_prefix_sizes
+            or prefixes[row.size, row.prefix_hash] > 1
+        ):
+            candidates.append((index, item))
+        else:
+            skipped_prefix += 1
+    diagnostic_count("hash_candidates", len(candidates))
+    diagnostic_count("hash_candidate_bytes", sum(item.size for _, item in candidates))
+    diagnostic_count("hash_skipped_unique_size", skipped)
+    diagnostic_count("hash_skipped_unique_prefix", skipped_prefix)
+    if _performance_log is not None:
+        _performance_log.set_phase("hashing")
+    emit(
+        f"Duplicate hash candidates: {len(candidates):,} | unique-size files skipped: {skipped:,} | distinct-prefix files skipped: {skipped_prefix:,}"
+    )
+    if not candidates:
+        return
+    items = iter(candidates)
+    completed = 0
+    last_print = time.monotonic()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        pending = {}
+
+        def submit_next():
+            try:
+                index, item = next(items)
+            except StopIteration:
+                return
+            pending[executor.submit(file_digest, item.path, item.size)] = index
+
+        for _ in range(workers * 2):
+            submit_next()
+        while pending:
+            done, _ = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
+            for future in done:
+                index = pending.pop(future)
+                try:
+                    rows[index] = replace(rows[index], content_hash=future.result())
+                except OSError as exc:
+                    rows[index] = replace(rows[index], error=exception_text(exc))
+                    diagnostic_count("hash_errors")
+                    diagnostic_count("row_errors")
+                completed += 1
+                diagnostic_count("hash_candidates_completed")
+                submit_next()
+            now = time.monotonic()
+            if now - last_print >= 10:
+                emit(
+                    f"Duplicate hash candidates completed: {completed:,} / {len(candidates):,}"
+                )
+                last_print = now
 
 
 def apply_physical_row_limit(
@@ -3089,6 +3397,7 @@ def _report_workbook(output_path: Path):
             _report_write_paths.difference_update(allowed)
 
 
+@diagnostic_operation("write_report")
 def write_workbook(
     rows: list[ResultRow],
     output_path: Path,
@@ -3542,7 +3851,7 @@ def write_workbook(
             ("Virtual rows", sum(row.is_virtual for row in rows)),
             (
                 "Content fingerprints",
-                "BLAKE3-256 of complete contents. Only repeated contents receive a Duplicate group ID, consecutive from 1 within this report. Unique, virtual and unhashed rows have blank IDs.",
+                "BLAKE3-256 of complete contents. Lossless size/prefix filters skip ordinary files that cannot be duplicates unless --hash-all is selected; archive leaves are hashed during integrity inspection. Only repeated contents receive a Duplicate group ID, consecutive from 1 within this report. Unique, virtual and unhashed rows have blank IDs.",
             ),
             (
                 "Rows with fingerprints",
@@ -3551,6 +3860,12 @@ def write_workbook(
             ("Nonvirtual rows", sum(not row.is_virtual for row in rows)),
             ("Duplicate groups", len(content_groups)),
             ("Duplicate file rows", sum(content_counts[key] for key in content_groups)),
+            (
+                "Fingerprint mode",
+                "All readable files"
+                if report.hash_all
+                else "Duplicate candidates (size/prefix)",
+            ),
         ]
         for label, value in summary_rows:
             if isinstance(value, datetime):
@@ -3782,10 +4097,22 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
     parser.add_argument("--output", help="Override the XLSX report path (local or SMB)")
+    diagnostics = parser.add_mutually_exclusive_group()
+    diagnostics.add_argument(
+        "--log", help="New local diagnostic JSONL file outside input (must not exist)"
+    )
+    diagnostics.add_argument(
+        "--no-log", action="store_true", help="Disable the neutral performance log"
+    )
     parser.add_argument(
         "--full-metadata",
         action="store_true",
         help="Include diagnostic link, permission, Windows-attribute and st_* columns",
+    )
+    parser.add_argument(
+        "--hash-all",
+        action="store_true",
+        help="Hash all readable files, including unique-size files (more SMB I/O)",
     )
     parser.add_argument(
         "--workers",
@@ -3862,8 +4189,90 @@ def execute_review(args, configured_root: str, output_path: Path, progress=None)
 
     if args.workers is None:
         args.workers = choose_workers(root_folder)
-    with safe_runtime(root_folder, output_path):
-        return scan_and_report(args, root_folder, output_path, progress)
+    with (
+        safe_runtime(root_folder, output_path),
+        performance_log(args, root_folder, progress) as log,
+    ):
+        code = scan_and_report(args, root_folder, output_path, progress)
+        if log is not None:
+            log.exit_code = code
+        return code
+
+
+@contextmanager
+def performance_log(args, root: str, progress=None):
+    """Persist a local, name-free log even when inspection is blocked on I/O."""
+    global _performance_log
+    emit = progress or print
+    if args.no_log:
+        yield None
+        return
+    explicit = bool(args.log)
+    log = None
+    try:
+        if explicit:
+            path = Path(absolute_path(pasted_path(args.log)))
+        else:
+            base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else None
+            candidates = [
+                Path(base) / "FolderReview" / "Logs" if base else None,
+                Path(tempfile.gettempdir()).parent / "folder-review-logs",
+            ]
+            directory = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate is not None
+                    and local_storage(candidate)
+                    and not path_within(candidate, root)
+                ),
+                None,
+            )
+            if directory is None:
+                raise OSError("No local diagnostic folder is available")
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"folder-review-{os.urandom(12).hex()}.jsonl"
+        if not local_storage(path) or path_within(path, root):
+            raise ValueError("Diagnostic logs must stay local and outside input.")
+        # Exclusive creation also prevents overwriting an alias/hard link.
+        stream = open(extended_path(path), "x", encoding="utf-8")  # noqa: SIM115 -- PerformanceLog owns and closes the stream
+        log = PerformanceLog(stream)
+        _performance_log = log
+        log.start(args.workers, not local_storage(root), args.hash_all)
+    except (OSError, ValueError, RuntimeError):
+        _performance_log = None
+        if log is not None:
+            log.finish(1)
+        log = None
+        if explicit:
+            raise
+        emit("WARNING: Diagnostic log unavailable; the review will continue.")
+    try:
+        if log is not None:
+            emit(f"Diagnostic log: {path}")
+        yield log
+    except BaseException as exc:
+        if log is not None:
+            # Never serialize the exception class/message: third-party code
+            # can include input content in either. Only fixed categories/codes.
+            log.snapshot(
+                "failure",
+                category="io" if isinstance(exc, OSError) else "other",
+                errno=getattr(exc, "errno", None)
+                if isinstance(exc, OSError) and type(exc.errno) is int
+                else None,
+                winerror=getattr(exc, "winerror", None)
+                if isinstance(exc, OSError)
+                and type(getattr(exc, "winerror", None)) is int
+                else None,
+            )
+        raise
+    finally:
+        _performance_log = None
+        if log is not None:
+            log.finish(log.exit_code)
+            if log.failed:
+                emit("WARNING: The diagnostic log could not be fully written.")
 
 
 def review_folder(
@@ -3915,6 +4324,8 @@ def scan_and_report(
     started_at = local_now()
     emit(f"Scanning: {root_folder}")
     emit(f"Workers: {args.workers}")
+    if _performance_log is not None:
+        _performance_log.set_phase("enumeration")
     physical_files, stats = scan_tree(
         root_folder,
         report_exclusions(output_path, root_folder),
@@ -3952,7 +4363,11 @@ def scan_and_report(
             else time.monotonic() + max_archive_seconds
         ),
     )
-    rows = inspect_files(physical_files, args.workers, budget, progress=progress)
+    if _performance_log is not None:
+        _performance_log.set_phase("inspection")
+    rows = inspect_files(
+        physical_files, args.workers, budget, progress=progress, hash_all=args.hash_all
+    )
     emit(f"Logical file rows: {len(rows):,}")
 
     errors = sum(row.error is not None for row in rows)
@@ -3972,8 +4387,11 @@ def scan_and_report(
         max_expanded_bytes=max_expanded_bytes,
         max_archive_seconds=max_archive_seconds,
         max_rows=args.max_rows,
+        hash_all=args.hash_all,
     )
     emit("Writing Excel workbook...")
+    if _performance_log is not None:
+        _performance_log.set_phase("report")
     write_workbook(
         rows, output_path, root_folder, report, full_metadata=args.full_metadata
     )

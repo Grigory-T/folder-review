@@ -21,6 +21,14 @@ Existing output is intentionally replaced; all other target files remain read-on
 Links are listed without traversing their targets. Temporary processing files
 are cleaned on normal completion/failure; a crash can leave local temporary files.
 
+Neutral performance logs are local files outside input. They contain only
+tool-owned categories, aggregate counts/timings and byte totals, with no input
+names/paths/content/fingerprints, host/account identifiers or exception messages.
+The log path is displayed in progress, not written inside the log. Logs are not
+uploaded. Creation is exclusive; a log never replaces an existing file. Logging
+can be disabled with --no-log. Diagnostic heartbeats do not interrupt OS I/O or
+change operating-system SMB timeouts.
+
 These are application protections, not an OS sandbox. OS access-time updates,
 cloud hydration, antivirus, filesystem redirectors and a compromised host are
 outside their control. Saving a report changes its parent directory timestamp.

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import re
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
@@ -61,6 +63,223 @@ class FolderReviewTests(unittest.TestCase):
             properties=folder_review.file_properties(path.name, stat_result),
         )
         return folder_review.process_file(item)
+
+    def test_performance_log_is_neutral_and_survives_a_slow_operation(self):
+        path = self.root / "diagnostics.jsonl"
+        log = folder_review.PerformanceLog(path.open("w", encoding="utf-8"))
+        log.INTERVAL = 0.01
+        log.start(2, True)
+        try:
+            log.set_phase("inspection")
+            with log.operation("hash"):
+                log.count("hash_bytes", 123)
+                time.sleep(0.06)
+        finally:
+            log.finish(0)
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(records[0]["storage"], "smb")
+        self.assertEqual(records[-1]["exit_code"], 0)
+        heartbeats = [r for r in records if r["event"] == "heartbeat"]
+        self.assertTrue(any(r["operations"]["hash"]["active"] == 1 for r in heartbeats))
+        self.assertEqual(records[-1]["counters"]["hash_bytes"], 123)
+        self.assertEqual(records[-1]["operations"]["hash"]["completed"], 1)
+
+    def test_review_log_contains_no_input_names_paths_or_error_messages(self):
+        source = self.root / "private-source-name"
+        source.mkdir()
+        (source / "private-file-name.txt").write_text("private content")
+        log = self.root / "neutral.jsonl"
+        output = self.root / "report.xlsx"
+        args = folder_review.parse_args(["--log", str(log), "--workers", "1"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(folder_review.execute_review(args, str(source), output), 0)
+        text = log.read_text()
+        for private in (
+            str(self.root),
+            source.name,
+            "private-file-name",
+            "private content",
+        ):
+            self.assertNotIn(private, text)
+        records = [json.loads(line) for line in text.splitlines()]
+        self.assertEqual(records[-1]["exit_code"], 0)
+        self.assertEqual(records[-1]["counters"]["physical_items_completed"], 1)
+        self.assertEqual(
+            {r["phase"] for r in records},
+            {"starting", "enumeration", "inspection", "hashing", "report"},
+        )
+        self.assertTrue(output.is_file())
+        self.assertEqual(len(list(source.iterdir())), 1)
+
+        failed_log = self.root / "failed.jsonl"
+        args.log = str(failed_log)
+        with (
+            mock.patch.object(
+                folder_review, "scan_tree", side_effect=OSError("private-error-message")
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(OSError),
+        ):
+            folder_review.execute_review(args, str(source), output)
+        self.assertNotIn("private-error-message", failed_log.read_text())
+        self.assertEqual(
+            json.loads(failed_log.read_text().splitlines()[-1])["exit_code"], 1
+        )
+        self.assertIsNone(folder_review._performance_log)
+
+    def test_diagnostic_log_never_overwrites_or_writes_inside_input(self):
+        source = self.root / "input"
+        source.mkdir()
+        existing = self.root / "existing.jsonl"
+        existing.write_text("unchanged")
+        for path in (existing, source / "not-allowed.jsonl"):
+            args = folder_review.parse_args(["--log", str(path)])
+            with (
+                folder_review.safe_runtime(str(source), self.root / "report.xlsx"),
+                self.assertRaises((OSError, ValueError)),
+                folder_review.performance_log(args, str(source)),
+            ):
+                self.fail("Unsafe diagnostic output was accepted")
+        self.assertEqual(existing.read_text(), "unchanged")
+        self.assertEqual(list(source.iterdir()), [])
+
+    def test_diagnostic_write_failure_is_nonfatal_and_log_size_is_bounded(self):
+        stream = mock.Mock()
+        log = folder_review.PerformanceLog(stream)
+        log.MAX_BYTES = 1
+        log.snapshot("start")
+        count = stream.write.call_count
+        log.snapshot("heartbeat")
+        self.assertEqual(stream.write.call_count, count)
+        stream.write.side_effect = OSError("private storage failure")
+        log.finish(0)
+        self.assertTrue(log.failed)
+
+    def test_duplicate_prefilters_preserve_full_hash_groups_including_archives(self):
+        source = self.root / "input"
+        source.mkdir()
+        payloads = {
+            "copy-a.txt": b"identical physical content",
+            "copy-b.bin": b"identical physical content",
+            "prefix-a.bin": b"p" * folder_review.MAGIC_READ_SIZE + b"A",
+            "prefix-b.bin": b"p" * folder_review.MAGIC_READ_SIZE + b"B",
+            "distinct-a.bin": b"a" * 48,
+            "distinct-b.bin": b"b" * 48,
+            "unique-size.bin": b"unique size" * 79,
+            "archive-match.bin": b"physical and archive member match",
+            "empty-a.txt": b"",
+            "empty-b.txt": b"",
+        }
+        for name, data in payloads.items():
+            (source / name).write_bytes(data)
+        self.make_zip(
+            source / "contents.zip",
+            {"nested/member.bin": payloads["archive-match.bin"]},
+        )
+        self.make_7z(source / "contents.7z", {"other.bin": payloads["copy-a.txt"]})
+        items = folder_review.scan_tree(str(source), set(), 2)[0]
+        with mock.patch.object(
+            folder_review, "file_digest", wraps=folder_review.file_digest
+        ) as digest:
+            optimized = folder_review.inspect_files(items, 2)
+        fully_hashed = folder_review.inspect_files(items, 2, hash_all=True)
+
+        def duplicates(rows):
+            groups = {}
+            for row in rows:
+                if row.content_hash is not None:
+                    groups.setdefault(row.content_hash, set()).add(row.full_path)
+            return {frozenset(group) for group in groups.values() if len(group) > 1}
+
+        self.assertEqual(duplicates(optimized), duplicates(fully_hashed))
+        self.assertEqual(sorted(map(len, duplicates(optimized))), [2, 2, 3])
+        names = {Path(call.args[0]).name for call in digest.call_args_list}
+        self.assertNotIn("unique-size.bin", names)
+        self.assertNotIn("distinct-a.bin", names)
+        self.assertNotIn("distinct-b.bin", names)
+        self.assertTrue(
+            {
+                "copy-a.txt",
+                "copy-b.bin",
+                "prefix-a.bin",
+                "prefix-b.bin",
+                "archive-match.bin",
+                "empty-a.txt",
+                "empty-b.txt",
+            }
+            <= names
+        )
+        self.assertTrue(all(row.error is None for row in optimized))
+
+    def test_duplicate_hash_failure_is_retained_and_full_hash_mode_is_available(self):
+        source = self.root / "input"
+        source.mkdir()
+        for name in ("a.txt", "b.txt"):
+            (source / name).write_bytes(b"same")
+        unique = source / "unique.bin"
+        unique.write_bytes(b"longer unique contents")
+        items = folder_review.scan_tree(str(source), set(), 1)[0]
+        original = folder_review.file_digest
+
+        def fail_one(path, expected_size):
+            if Path(path).name == "b.txt":
+                raise OSError("synthetic unreadable content")
+            return original(path, expected_size)
+
+        with mock.patch.object(folder_review, "file_digest", side_effect=fail_one):
+            rows = folder_review.inspect_files(items, 1)
+        failed = next(row for row in rows if row.leaf_name == "b.txt")
+        self.assertIsNone(failed.content_hash)
+        self.assertIn("unreadable", failed.error)
+        self.assertIsNone(
+            next(row for row in rows if row.leaf_name == unique.name).content_hash
+        )
+        args = folder_review.parse_args(["--hash-all"])
+        self.assertTrue(args.hash_all)
+        self.assertFalse(folder_review.parse_args([]).hash_all)
+        full = folder_review.inspect_files(items, 1, hash_all=args.hash_all)
+        self.assertEqual(
+            next(row for row in full if row.leaf_name == unique.name).content_hash,
+            blake3(unique.read_bytes()).digest(),
+        )
+
+    def test_duplicate_prefilter_handles_short_prefixes_conservatively(self):
+        source = self.root / "input"
+        source.mkdir()
+        for name in ("a.txt", "b.txt"):
+            (source / name).write_bytes(b"identical contents")
+        original = folder_review.inspect_file
+
+        def short_sample(path, *, sample=None):
+            result = original(path, sample=sample)
+            if Path(path).name == "a.txt":
+                sample[0] = sample[0][:2]
+            return result
+
+        with mock.patch.object(folder_review, "inspect_file", side_effect=short_sample):
+            rows = folder_review.inspect_files(
+                folder_review.scan_tree(str(source), set(), 1)[0], 1
+            )
+        self.assertTrue(
+            all(
+                row.content_hash == blake3(b"identical contents").digest()
+                for row in rows
+            )
+        )
+
+    def test_virtual_and_unreadable_rows_do_not_create_hash_candidates(self):
+        source = self.root / "input"
+        source.mkdir()
+        (source / "one.txt").write_bytes(b"")
+        (source / "empty").mkdir()
+        items = folder_review.scan_tree(str(source), set(), 1)[0]
+        with mock.patch.object(
+            folder_review, "file_digest", wraps=folder_review.file_digest
+        ) as digest:
+            rows = folder_review.inspect_files(items, 1)
+        digest.assert_not_called()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row.content_hash is None for row in rows))
 
     def test_virtual_reason_markers_are_filterable_and_last_is_always_one(self) -> None:
         rows = [
@@ -411,7 +630,7 @@ class FolderReviewTests(unittest.TestCase):
             {name: payload for name, (payload, _) in data.items()},
         )
         disk = folder_review.inspect_files(
-            folder_review.scan_tree(str(inputs), set(), 2)[0], 2
+            folder_review.scan_tree(str(inputs), set(), 2)[0], 2, hash_all=True
         )
         for rows in (disk, self.inspect(zip_path), self.inspect(seven)):
             self.assertEqual(len(rows), len(data))

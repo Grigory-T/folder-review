@@ -63,10 +63,16 @@ uv sync --frozen --no-dev
   contents share a consecutive numeric ID from 1; unique files stay blank.
   IDs apply only within one report. For duplicate pivots, exclude blank IDs, group by this column
   and sum `last`. `scan_status` gives duplicate group and duplicate file-row counts.
-  Native BLAKE3-256 hashes full contents, reusing a read buffer and existing
-  archive decompression streams. Hashing adds disk/SMB traffic. Links,
+  Lossless size and already-read prefix filters avoid full reads of ordinary
+  files that cannot be duplicates. Archive members participate in size matching;
+  their full hashes are collected during unchanged integrity inspection.
+  Candidates still receive native BLAKE3-256 hashes of complete contents; a prefix
+  never proves equality. This preserves duplicate matching on unchanged inputs
+  while reducing disk/SMB traffic. Links,
   virtual/unreadable rows have no ID; observable file changes produce an error.
-  This is not a filesystem snapshot. Raw BLAKE3 is available with `--full-metadata`.
+  This is not a filesystem snapshot. Raw BLAKE3 is available with `--full-metadata`,
+  with blanks for skipped files. Use `--hash-all` to fingerprint every readable
+  file, including unique files; this can be much slower on large SMB datasets.
 - **`last` is always 1**, including virtual rows. Filter `Virtual row`
   and `Inspection state` to select the rows to count. Virtual leaves are `dummy.dummy`
   (no inventoried files), `deny.deny` (access denied), `password.password`,
@@ -114,6 +120,19 @@ uv sync --frozen --no-dev
   inputs and 8-32 for network inputs. This is a bounded heuristic, not a universal
   optimum; `--workers 1..64` remains available. No trial scans or extra input reads
   are performed to choose workers.
+- A neutral JSONL diagnostic log is enabled by default. Its location is shown in
+  progress: normally `%LOCALAPPDATA%\FolderReview\Logs` on Windows, otherwise a
+  `folder-review-logs` directory beside the local processing workspace. Logs
+  stay local and outside input. They contain phase timings, active-operation
+  ages, workers, counts and application bytes read, **no input names, paths,
+  content, hashes, machine/account names or exception text**. Heartbeats every
+  5 seconds also cover stalled operations. Repeated heartbeats stop after 8 MiB;
+  the final record is still attempted. Logging failures warn without discarding
+  the report. Keep the log after a slow run; it separates listing, classification,
+  metadata queries, hashing, archives and writing. Operation times sum across
+  workers and can exceed elapsed time; byte counts are not network-traffic measurements.
+  `--log "C:\Reports\review.jsonl"` selects a new local file outside input;
+  existing files are never overwritten. Use `--no-log` to disable diagnostics.
 - `scan_status` records COMPLETE (exit `0`) or PARTIAL (exit `2`). Fatal errors
   return `1`. Archive integrity failures and inspection limits remain visible.
 - No web requests, telemetry or runtime downloads. Existing input files remain

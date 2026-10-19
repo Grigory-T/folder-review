@@ -1,4 +1,4 @@
-Folder Review 0.14.0 - Windows x86-64
+Folder Review 0.17.0 - Windows x86-64
 
 Copy this folder to a writable local folder on the Windows computer.
 Double-click folder-review.exe to open the desktop window. Browse for a folder
@@ -41,7 +41,9 @@ Duplicate group IDs start at 1, only for repeated fully read contents.
 Unique, virtual and unhashed rows have blank IDs.
 For duplicate pivots: exclude blank IDs, group by Duplicate group, sum last.
 IDs belong to this report only. Internal BLAKE3-256 uses native code and reusable
-read buffers; full-file hashing increases disk/SMB traffic. Unreadable/changing
+read buffers. Lossless size/prefix filters skip impossible duplicate candidates.
+Archive members still undergo full integrity inspection and participate in matching.
+Use --hash-all to fingerprint all readable files (additional disk/SMB traffic). Unreadable/changing
 content and links have no ID; this is not a filesystem snapshot.
 Raw BLAKE3 is available with --full-metadata.
 
@@ -79,3 +81,9 @@ The full ZIP includes components.json and corresponding LGPL source archives.
 Python networking is disabled throughout application execution. Only local
 filesystems and SMB are supported; URLs and WebDAV are rejected.
 Application safeguards are not an OS sandbox; see SECURITY.md for the limits.
+
+Neutral diagnostics are enabled by default; the local JSONL path appears in progress.
+Logs contain counts, timings and byte totals, no input names, paths, content, hashes,
+machine/account identifiers or exception text. Five-second heartbeats cover stalls.
+Use --log to choose a new local file outside input; --no-log disables logging.
+Normally logs are in %LOCALAPPDATA%\FolderReview\Logs. No logs are uploaded.
