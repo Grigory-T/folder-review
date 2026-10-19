@@ -2553,7 +2553,10 @@ class FolderReviewTests(unittest.TestCase):
             folder_review.safe_runtime(str(source), self.root / "output.xlsx"),
         ):
             workspace = Path(tempfile.gettempdir())
-            self.assertEqual(workspace.parent, self.root / "folder-review-data")
+            self.assertEqual(
+                folder_review.resolved_path(workspace.parent),
+                folder_review.resolved_path(self.root / "folder-review-data"),
+            )
             self.assertFalse(poison.exists())
         self.assertFalse(workspace.exists())
         self.assertEqual(list(source.iterdir()), [])
