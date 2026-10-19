@@ -189,7 +189,11 @@ def normalized_workbook(path):
             for index, row in enumerate(status, 1)
             if row and row[0] in ("Started at", "Completed at")
         }
-        status_values = {row[0]: row[1] for row in status[1:17]}
+        status_values = {}
+        for row in status[1:]:
+            if not row or row[0] is None:
+                break
+            status_values[row[0]] = row[1]
         rows = sum(1 for _ in workbook["folder_review"].iter_rows(min_row=7))
     finally:
         workbook.close()
