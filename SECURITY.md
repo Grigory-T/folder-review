@@ -5,23 +5,28 @@ web service, or automatic runtime installation. Its permanent Python audit hook
 rejects sockets/DNS, HTTP requests, browser launching and remote registry calls,
 including before and after a scan. SMB uses operating-system file I/O.
 
-Use local storage or SMB UNC/mapped paths for input and reports. URLs, known
+Use local storage or SMB UNC/mapped paths for input. Reports stay beside the program. URLs, known
 Windows WebDAV paths (including mapped drives), and non-SMB Linux network mounts
-are rejected. Run the application itself locally. The EXE unpacks beneath the Windows local
-profile temporary directory, independent of TEMP/TMP; a remote unpacked runtime
-is rejected. Archive processing and XLSX
-workspaces stay on local storage outside the inspected tree.
+are rejected. Run the application itself from a writable local folder.
+The standard PyInstaller folder build loads its runtime from `_internal` beside
+the EXE; it does not self-extract into AppData or OS temp. Application-owned logs
+and per-run processing workspaces stay in `folder-review-data` beside the program,
+independently of working directory, TEMP/TMP or profile paths. No external fallback
+is used. Python source uses the same layout beside folder_review.py.
 
 The scanner does not edit, delete, rename, chmod or execute inspected files.
 During a review, an audit guard rejects Python mutations of the selected tree,
-including through known link/mapped/UNC aliases. The only write exception is the
-explicitly selected report and its exact random atomic-save staging file. The
+including through known link/mapped/UNC aliases. Write exceptions are the
+report beside the application, its exact random atomic-save staging file, and the
+application-owned folder-review-data subtree. Runtime/support directories and the
+selected report are excluded when the tool folder is within input. Selecting a
+support/runtime folder itself as input is rejected. The
 report is excluded from scans and replaced only after a successful workbook close.
 Existing output is intentionally replaced; all other target files remain read-only.
 Links are listed without traversing their targets. Temporary processing files
 are cleaned on normal completion/failure; a crash can leave local temporary files.
 
-Neutral performance logs are local files outside input. They contain only
+Neutral performance logs stay in folder-review-data/logs beside the program. They contain only
 tool-owned categories, aggregate counts/timings and byte totals, with no input
 names/paths/content/fingerprints, host/account identifiers or exception messages.
 The log path is displayed in progress, not written inside the log. Logs are not

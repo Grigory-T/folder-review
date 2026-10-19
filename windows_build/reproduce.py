@@ -76,7 +76,18 @@ def main():
             env=env,
             check=True,
         )
-        rebuilt = fresh / "dist/folder-review.exe"
+        rebuilt = fresh / "dist/folder-review/folder-review.exe"
+
+        def runtime_tree(executable):
+            return {
+                p.relative_to(executable.parent).as_posix(): sha256(p)
+                for p in sorted((executable.parent / "_internal").rglob("*"))
+                if p.is_file()
+            }
+
+        expected_files, actual_files = runtime_tree(original), runtime_tree(rebuilt)
+        if expected_files != actual_files:
+            raise RuntimeError("Clean rebuild runtime files differ")
         expected, actual = sha256(original), sha256(rebuilt)
         if expected != actual:
             raise RuntimeError(f"Clean rebuild differs: {expected} != {actual}")
@@ -85,6 +96,8 @@ def main():
             "exe_sha256": expected,
             "rebuild_sha256": actual,
             "fresh_source_directory": True,
+            "runtime_tree_byte_identical": True,
+            "runtime_file_sha256": expected_files,
             "build_environment": BUILD_ENV,
             "source_input_sha256": hashes,
         }

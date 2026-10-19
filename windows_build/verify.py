@@ -82,7 +82,9 @@ def inspect_payload(exe):
             inspect_code(marshal.loads(archive.extract(name)))
     import io
 
-    with zipfile.ZipFile(io.BytesIO(archive.extract("base_library.zip"))) as standard:
+    with zipfile.ZipFile(
+        io.BytesIO((exe.parent / "_internal/base_library.zip").read_bytes())
+    ) as standard:
         assert standard.namelist() == sorted(standard.namelist()), (
             "Standard-library ZIP entries must have deterministic ordering"
         )
@@ -92,7 +94,10 @@ def inspect_payload(exe):
 
     pins = json.loads((ROOT / "windows_build/7zip-pins.json").read_text())
     for name in ("7z.exe", "7z.dll"):
-        assert hashlib.sha256(archive.extract(name)).hexdigest() == pins["sha256"][name]
+        assert (
+            hashlib.sha256((exe.parent / "_internal" / name).read_bytes()).hexdigest()
+            == pins["sha256"][name]
+        )
     for module in ("setuptools", "pkg_resources", "packaging"):
         assert not any(
             name == module or name.startswith(module + ".") for name in pyz.toc
@@ -557,7 +562,7 @@ def main():
         (inside_input / "data.txt").write_bytes(b"unchanged input")
 
         cases = [
-            ("inside-report", inside_input, [], 0, output),
+            ("report-beside-tool", inside_input, [], 0, output),
             ("logical-grouping", grouping_input, [], 0, output),
             ("presentation-markers", marker_input, [], 2, output),
             ("hashes-and-folders", hash_input, ["--full-metadata"], 0, output),
@@ -584,7 +589,6 @@ def main():
             ("byte-limit", root, ["--max-expanded-gib", "0.000000001"], 2, output),
             ("time-limit", root, ["--max-archive-seconds", "0.000000001"], 2, output),
             ("codecs", codecs, [], 0, output),
-            ("long-output", complete, [], 0, long_output),
             ("concurrency", root, ["--workers", "16"], 2, output),
         ] + rar_cases
         # Existing administrative share only: create no share or credentials.
@@ -592,7 +596,7 @@ def main():
         unc = Path(f"\\\\localhost\\{drive[0]}$" + tail)
         if unc.is_dir():
             cases.append(("UNC", unc, [], 0, output))
-            cases.append(("SMB-report", unc, [], 0, output))
+            cases.append(("SMB-input-local-report", unc, [], 0, output))
         else:
             results["UNC"] = "not available to this logon session"
         # Map only our generated corpus, then remove the temporary mapping.
@@ -629,11 +633,8 @@ def main():
                     ("exe", [str(exe)], minimal_env),
                 ):
                     target = (
-                        (complete if name == "SMB-report" else source)
-                        / "folder-review.xlsx"
-                        if name in {"inside-report", "SMB-report"}
-                        else destination / f"{name}-{label}.xlsx"
-                    )
+                        ROOT if label == "source" else exe.parent
+                    ) / f"{name}-{label}.xlsx"
                     invocation = (
                         command
                         + [
@@ -661,6 +662,12 @@ def main():
                         run.stdout,
                         run.stderr,
                     )
+                    copied = output / f"{name}-{label}.xlsx"
+                    import shutil
+
+                    shutil.copyfile(target, copied)
+                    target.unlink()
+                    target = copied
                     current, status, count = normalized_workbook(target)
                     if name == "logical-grouping":
                         workbook = load_workbook(target, read_only=True, data_only=True)
@@ -848,6 +855,7 @@ def main():
             portable.mkdir()
             relocated = portable / "folder-review.exe"
             shutil.copyfile(exe, relocated)
+            shutil.copytree(exe.parent / "_internal", portable / "_internal")
             run = subprocess.run(
                 [str(relocated), "--root", str(complete)],
                 cwd=output,

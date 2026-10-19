@@ -11,8 +11,6 @@ import tomllib
 from importlib import metadata
 from pathlib import Path
 
-from PyInstaller.archive.readers import CArchiveReader
-
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_ONLY = {
     "altgraph",
@@ -111,10 +109,10 @@ def main():
             "installer_sha256": sevenzip["installer_sha256"],
         }
     native = []
-    archive = CArchiveReader(str(args.exe))
-    for name in sorted(archive.toc):
-        if name.lower().endswith((".dll", ".pyd", ".exe")):
-            digest = hashlib.sha256(archive.extract(name)).hexdigest()
+    for path in sorted((args.exe.parent / "_internal").rglob("*")):
+        name = path.relative_to(args.exe.parent).as_posix()
+        if path.is_file() and name.lower().endswith((".dll", ".pyd", ".exe")):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
             if digest not in origins:
                 raise RuntimeError(
                     f"Native payload has no verified upstream origin: {name}"

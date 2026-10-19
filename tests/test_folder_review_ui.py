@@ -20,6 +20,9 @@ class DesktopTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.directory = Path(self.temporary.name)
+        mock.patch.object(
+            core, "application_directory", return_value=self.directory
+        ).start()
         self.root = self.directory / "input folder-пример"
         self.root.mkdir()
         self.window = tk.Tk()
@@ -49,18 +52,14 @@ class DesktopTests(unittest.TestCase):
             self.app.browse_button.invoke()
         self.assertEqual(self.app.folder.get(), str(self.root))
         self.assertFalse(self.app.start_button.instate(["disabled"]))
-        with mock.patch(
-            "folder_review_ui.filedialog.asksaveasfilename",
-            return_value=str(self.root / "report.xlsx"),
-        ):
-            self.app.save_button.invoke()
-        self.assertEqual(self.app.output.get(), str(self.root / "report.xlsx"))
+        self.assertEqual(self.app.output.get(), str(self.directory / core.OUTPUT_FILE))
+        self.assertEqual(str(self.app.output_entry.cget("state")), "readonly")
+        self.assertFalse(hasattr(self.app, "save_button"))
 
     def test_complete_report_from_quoted_pasted_path_is_created_in_background(self):
         source = self.root / "file.txt"
         source.write_bytes(b"unchanged")
         self.app.folder.set('"' + str(self.root) + '"')
-        self.app.output.set(str(self.root / "report.xlsx"))
         self.app.start_button.invoke()
         self.assertTrue(self.app.busy)
         self.assertEqual(self.app.progress.winfo_manager(), "grid")

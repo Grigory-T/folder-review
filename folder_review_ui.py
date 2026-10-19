@@ -142,14 +142,10 @@ class Application:
         )
         self.output_entry = ttk.Entry(card, textvariable=self.output)
         self.output_entry.grid(row=3, column=1, sticky="ew", pady=(8, 0))
-        self.save_button = ttk.Button(
-            card,
-            text="Save as…",
-            width=ACTION_WIDTH,
-            style="Action.TButton",
-            command=self.save_as,
+        self.output_entry.configure(state="readonly")
+        ttk.Label(card, text="Beside the application", style="Muted.Card.TLabel").grid(
+            row=3, column=2, padx=(12, 0), pady=(8, 0), sticky="w"
         )
-        self.save_button.grid(row=3, column=2, padx=(12, 0), pady=(8, 0))
         ttk.Label(card, text="Read workers", style="Card.TLabel").grid(
             row=4, column=0, sticky="w", pady=(10, 0)
         )
@@ -300,11 +296,11 @@ class Application:
         self.enable()
 
     def enable(self):
-        for entry in (self.folder_entry, self.output_entry):
-            entry.configure(state="disabled" if self.busy else "normal")
+        self.folder_entry.configure(state="disabled" if self.busy else "normal")
+        self.output_entry.configure(state="disabled" if self.busy else "readonly")
         self.worker_box.configure(state="disabled" if self.busy else "readonly")
         self.duplicate_box.configure(state="disabled" if self.busy else "readonly")
-        for button in (self.browse_button, self.save_button, self.metadata_box):
+        for button in (self.browse_button, self.metadata_box):
             button.state(["disabled" if self.busy else "!disabled"])
         ready = (
             not self.busy and self.folder.get().strip() and self.output.get().strip()
@@ -321,18 +317,6 @@ class Application:
             )
             if chosen:
                 self.folder.set(chosen)
-
-    def save_as(self):
-        if not self.busy:
-            chosen = filedialog.asksaveasfilename(
-                parent=self.window,
-                title="Save Excel report",
-                defaultextension=".xlsx",
-                filetypes=[("Excel workbook", "*.xlsx")],
-                initialfile=core.OUTPUT_FILE,
-            )
-            if chosen:
-                self.output.set(chosen)
 
     def append_log(self, text):
         self.log.configure(state="normal")
@@ -431,6 +415,6 @@ class Application:
 
 def launch():
     window = tk.Tk()
-    Application(window, Path(core.__file__).resolve().parent)
+    Application(window, core.application_directory())
     window.mainloop()
     return 0

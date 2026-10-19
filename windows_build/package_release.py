@@ -19,6 +19,9 @@ def main():
     manifest = json.loads((root / "build-manifest.json").read_text())
     if sha256(root / "folder-review.exe") != manifest["executable"]["sha256"]:
         raise RuntimeError("EXE identity differs from build manifest")
+    for name, digest in manifest["runtime_file_sha256"].items():
+        if sha256(root / name) != digest:
+            raise RuntimeError(f"Portable runtime mismatch: {name}")
     for name, digest in manifest["python_delivery_sha256"].items():
         if sha256(root / "python" / name) != digest:
             raise RuntimeError(f"Python delivery mismatch: {name}")
@@ -29,6 +32,8 @@ def main():
         target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
     ) as archive:
         for path in sorted(root.rglob("*")):
+            if "folder-review-data" in path.relative_to(root).parts:
+                continue
             if path.is_file() and path not in {target, root / "SHA256SUMS.txt"}:
                 entry = zipfile.ZipInfo(
                     path.relative_to(root).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)

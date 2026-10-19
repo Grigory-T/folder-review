@@ -61,7 +61,7 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 OUTPUT_FILE = "folder-review.xlsx"
 
 # Increment with the release version; included in neutral diagnostic logs.
-TOOL_VERSION = "0.17.0"
+TOOL_VERSION = "0.18.0"
 
 
 class PerformanceLog:
@@ -700,6 +700,34 @@ def path_within(path: str | os.PathLike[str], root: str) -> bool:
         candidate = parent
 
 
+def application_directory() -> Path:
+    """Actual delivery location, independent of working directory and profiles."""
+    return Path(
+        resolved_path(sys.executable if getattr(sys, "frozen", False) else __file__)
+    ).parent
+
+
+def portable_directory() -> Path:
+    """Reserve one local, non-linked support folder beside the application."""
+    directory = application_directory() / "folder-review-data"
+    if not local_storage(directory):
+        raise ValueError("Copy the tool to a writable local folder before running it.")
+    try:
+        info = os.lstat(extended_path(directory))
+    except FileNotFoundError:
+        os.mkdir(extended_path(directory))
+        info = os.lstat(extended_path(directory))
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or getattr(info, "st_file_attributes", 0) & 0x400
+    ):
+        raise ValueError(
+            "The application support folder must be a normal directory, not a link."
+        )
+    return directory
+
+
 def linux_filesystem(candidate: str) -> str:
     """Read local mount metadata; no server or trial file access."""
     best_mount = ""
@@ -812,6 +840,7 @@ def validate_output_path(output: Path, root: str) -> None:
 _protected_root: str | None = None
 _report_output_path: str | None = None
 _report_write_paths: set[str] = set()
+_portable_data_root: str | None = None
 
 
 def runtime_audit(event: str, arguments: tuple) -> None:
@@ -852,12 +881,21 @@ def runtime_audit(event: str, arguments: tuple) -> None:
             if os.path.islink(extended_path(value)):
                 raise PermissionError("Report writes must not follow symbolic links.")
             return
+        if _portable_data_root is not None and path_within(value, _portable_data_root):
+            if os.path.islink(extended_path(value)) or not local_storage(value):
+                raise PermissionError(
+                    "Support files must stay in the local application support folder."
+                )
+            return
         if path_within(value, root):
             raise PermissionError(
                 "The inspected folder is read-only for folder review."
             )
         if not local_storage(value):
             raise PermissionError("Working-file writes must stay on local storage.")
+        raise PermissionError(
+            "Working files must stay beside the application in folder-review-data."
+        )
 
     if event == "open":
         filename, _mode, flags = arguments
@@ -932,7 +970,14 @@ def runtime_audit(event: str, arguments: tuple) -> None:
             raise FileNotFoundError(
                 errno.ENOENT, "The archive backend is unavailable.", command[0]
             )
-        protect(executable)
+        if path_within(executable, root) and not (
+            getattr(sys, "frozen", False) and path_within(executable, sys._MEIPASS)
+        ):
+            raise PermissionError(
+                "The inspected folder is read-only; its programs cannot be executed."
+            )
+        if not local_storage(executable):
+            raise PermissionError("Archive backends must use local storage.")
     elif event in {
         "os.system",
         "os.exec",
@@ -951,52 +996,28 @@ sys.addaudithook(runtime_audit)
 
 @contextmanager
 def safe_runtime(root: str, output: Path):
-    """Keep workspaces outside input; only the selected report may be saved in it."""
-    global _protected_root, _report_output_path
+    """Write only the selected report and the delivery's portable support files."""
+    global _protected_root, _report_output_path, _portable_data_root
     if _protected_root is not None:
         raise RuntimeError("Concurrent scans in one Python process are not supported.")
     validate_storage_transport(root)
-    validate_storage_transport(output.parent)
     validate_output_path(output, root)
     if getattr(sys, "frozen", False) and not local_storage(sys._MEIPASS):
-        raise ValueError("The unpacked application runtime must use local storage.")
-    if getattr(sys, "frozen", False) and path_within(sys._MEIPASS, root):
+        raise ValueError("The application runtime must use local storage.")
+    support = portable_directory()
+    if path_within(root, str(support)) or (
+        getattr(sys, "frozen", False) and path_within(root, sys._MEIPASS)
+    ):
         raise ValueError(
-            "The inspected folder contains the running temporary runtime. Select a narrower input folder."
+            "Select data to inspect, not the application's support folder."
         )
     previous_tempdir = tempfile.tempdir
+    _portable_data_root = str(support)
     _protected_root = root
     _report_output_path = normalized_key(output)
     try:
-        # gettempdir() may probe candidate folders by creating a file. Guard
-        # those probes too, including when TEMP/TMP points into the input.
-        try:
-            workspace_parent = tempfile.gettempdir()
-        except FileNotFoundError:
-            workspace_parent = None
-        candidates = [
-            workspace_parent,
-            str(output.parent),
-            os.path.dirname(absolute_path(root)),
-            str(Path.home()),
-        ]
-        workspace_parent = next(
-            (
-                candidate
-                for candidate in candidates
-                if candidate
-                and not path_within(candidate, root)
-                and local_storage(candidate)
-                and os.path.isdir(extended_path(candidate))
-            ),
-            None,
-        )
-        if workspace_parent is None:
-            raise ValueError(
-                "No local temporary folder outside the inspected folder is available."
-            )
         with tempfile.TemporaryDirectory(
-            prefix="folder-review-work-", dir=extended_path(workspace_parent)
+            prefix="work-", dir=extended_path(support)
         ) as workspace:
             tempfile.tempdir = workspace
             try:
@@ -1007,6 +1028,7 @@ def safe_runtime(root: str, output: Path):
         tempfile.tempdir = previous_tempdir
         _protected_root = None
         _report_output_path = None
+        _portable_data_root = None
         _report_write_paths.clear()
 
 
@@ -4129,10 +4151,14 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Use terminal prompts instead of the desktop window",
     )
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
-    parser.add_argument("--output", help="Override the XLSX report path (local or SMB)")
+    parser.add_argument(
+        "--output",
+        help="XLSX report path beside the application (default: folder-review.xlsx)",
+    )
     diagnostics = parser.add_mutually_exclusive_group()
     diagnostics.add_argument(
-        "--log", help="New local diagnostic JSONL file outside input (must not exist)"
+        "--log",
+        help="New JSONL file in folder-review-data/logs beside the application (must not exist)",
     )
     diagnostics.add_argument(
         "--no-log", action="store_true", help="Disable the neutral performance log"
@@ -4186,7 +4212,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 def run() -> int:
     validate_platform()
     args = parse_args()
-    script_dir = Path(os.path.dirname(absolute_path(__file__)))
+    script_dir = application_directory()
 
     configured_root = pasted_path(args.root or ROOT_FOLDER)
     if (
@@ -4228,7 +4254,10 @@ def execute_review(args, configured_root: str, output_path: Path, progress=None)
     if not local_storage(os.path.dirname(absolute_path(__file__))):
         raise ValueError("Copy the tool to a local folder before running it.")
     validate_output_path(output_path, root_folder)
-
+    if resolved_path(output_path.parent) != resolved_path(application_directory()):
+        raise ValueError(
+            "Reports must be saved beside the application. Move the whole tool folder to change this location."
+        )
     if args.workers is None:
         args.workers = choose_workers(root_folder)
     with (
@@ -4252,30 +4281,21 @@ def performance_log(args, root: str, progress=None):
     explicit = bool(args.log)
     log = None
     try:
+        directory = portable_directory() / "logs"
+        if directory.exists() and (
+            directory.is_symlink()
+            or resolved_path(directory) != normalized_key(directory)
+        ):
+            raise ValueError("The diagnostic folder must not be a link.")
+        directory.mkdir(exist_ok=True)
         if explicit:
             path = Path(absolute_path(pasted_path(args.log)))
+            if resolved_path(path.parent) != resolved_path(directory):
+                raise ValueError(
+                    "Diagnostic logs must be in folder-review-data/logs beside the application."
+                )
         else:
-            base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else None
-            candidates = [
-                Path(base) / "FolderReview" / "Logs" if base else None,
-                Path(tempfile.gettempdir()).parent / "folder-review-logs",
-            ]
-            directory = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if candidate is not None
-                    and local_storage(candidate)
-                    and not path_within(candidate, root)
-                ),
-                None,
-            )
-            if directory is None:
-                raise OSError("No local diagnostic folder is available")
-            directory.mkdir(parents=True, exist_ok=True)
             path = directory / f"folder-review-{os.urandom(12).hex()}.jsonl"
-        if not local_storage(path) or path_within(path, root):
-            raise ValueError("Diagnostic logs must stay local and outside input.")
         # Exclusive creation also prevents overwriting an alias/hard link.
         stream = open(extended_path(path), "x", encoding="utf-8")  # noqa: SIM115 -- PerformanceLog owns and closes the stream
         log = PerformanceLog(stream)
@@ -4358,6 +4378,17 @@ def report_exclusions(output: Path, root: str) -> set[str]:
     return excluded
 
 
+def scan_exclusions(output: Path, root: str) -> set[str]:
+    """Skip changing tool-owned subtrees, including mapped aliases, once per scan."""
+    excluded = report_exclusions(output, root)
+    directories = [application_directory() / "folder-review-data"]
+    if getattr(sys, "frozen", False):
+        directories.append(Path(sys._MEIPASS))
+    for directory in directories:
+        excluded.update(report_exclusions(directory, root))
+    return excluded
+
+
 def scan_and_report(
     args: argparse.Namespace,
     root_folder: str,
@@ -4380,7 +4411,7 @@ def scan_and_report(
         _performance_log.set_phase("enumeration")
     physical_files, stats = scan_tree(
         root_folder,
-        report_exclusions(output_path, root_folder),
+        scan_exclusions(output_path, root_folder),
         args.workers,
         progress=progress,
     )

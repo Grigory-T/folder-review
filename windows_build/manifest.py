@@ -209,6 +209,12 @@ def main():
             "bytes": args.exe.stat().st_size,
             "sha256": sha256(args.exe),
         },
+        "distribution": "Portable PyInstaller onedir; keep EXE and _internal together",
+        "runtime_file_sha256": {
+            p.relative_to(args.exe.parent).as_posix(): sha256(p)
+            for p in sorted((args.exe.parent / "_internal").rglob("*"))
+            if p.is_file()
+        },
         "compression": "PyInstaller standard zlib, level 9; no UPX, strip or bytecode optimization",
         "excluded_build_only_modules": ["setuptools", "pkg_resources", "packaging"],
         "payload_entries": len(archive.toc),

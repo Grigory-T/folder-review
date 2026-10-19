@@ -29,6 +29,11 @@ class FolderReviewTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="folder-review-test-")
         self.root = Path(self.temporary.name)
+        self.location = mock.patch.object(
+            folder_review, "application_directory", return_value=self.root
+        )
+        self.location_mock = self.location.start()
+        self.addCleanup(self.location.stop)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -88,7 +93,7 @@ class FolderReviewTests(unittest.TestCase):
         source = self.root / "private-source-name"
         source.mkdir()
         (source / "private-file-name.txt").write_text("private content")
-        log = self.root / "neutral.jsonl"
+        log = folder_review.portable_directory() / "logs/neutral.jsonl"
         output = self.root / "report.xlsx"
         args = folder_review.parse_args(["--log", str(log), "--workers", "1"])
         with contextlib.redirect_stdout(io.StringIO()):
@@ -111,7 +116,7 @@ class FolderReviewTests(unittest.TestCase):
         self.assertTrue(output.is_file())
         self.assertEqual(len(list(source.iterdir())), 1)
 
-        failed_log = self.root / "failed.jsonl"
+        failed_log = log.parent / "failed.jsonl"
         args.log = str(failed_log)
         with (
             mock.patch.object(
@@ -2219,6 +2224,7 @@ class FolderReviewTests(unittest.TestCase):
         source = root / "file.txt"
         source.write_bytes(b"unchanged")
         output = root / "folder-review.xlsx"
+        self.location_mock.return_value = root
         for _ in range(2):
             with (
                 mock.patch.object(
@@ -2240,11 +2246,14 @@ class FolderReviewTests(unittest.TestCase):
             finally:
                 book.close()
         self.assertEqual(source.read_bytes(), b"unchanged")
-        self.assertEqual(set(root.iterdir()), {source, output})
+        self.assertEqual(
+            set(root.iterdir()), {source, output, root / "folder-review-data"}
+        )
 
     def test_tool_in_target_uses_default_report_without_an_extra_prompt(self) -> None:
         root = self.root / "tool folder"
         root.mkdir()
+        self.location_mock.return_value = root
         tool = root / "tool.py"
         tool.write_bytes(b"ordinary source file")
         with (
@@ -2440,7 +2449,8 @@ class FolderReviewTests(unittest.TestCase):
                     self.assertRaises(PermissionError),
                 ):
                     operation()
-            output.write_bytes(b"allowed outside input")
+            with self.assertRaises(PermissionError):
+                output.write_bytes(b"not a workbook save")
             with mock.patch.object(folder_review.shutil, "which", return_value=None):
                 self.assertFalse(
                     folder_review.rarfile.ToolSetup(
@@ -2527,32 +2537,79 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(tempfile.tempdir, original_tempdir)
         self.assertEqual(list(input_root.iterdir()), [])
 
-    def test_temp_directory_discovery_cannot_write_to_input(self) -> None:
-        input_root = self.root / "input"
-        input_root.mkdir()
-        probe = input_root / "probe.tmp"
-        with (
-            mock.patch.object(
-                tempfile, "gettempdir", side_effect=lambda: probe.write_bytes(b"probe")
-            ),
-            self.assertRaises(PermissionError),
-            folder_review.safe_runtime(str(input_root), self.root / "output.xlsx"),
-        ):
-            self.fail("Input was allowed as a writable temp candidate")
-        self.assertFalse(probe.exists())
-        self.assertIsNone(folder_review._protected_root)
+    def test_system_temp_and_profile_are_never_used_for_processing(self) -> None:
+        source = self.root / "input"
+        source.mkdir()
+        poison = source / "must-not-be-created"
         with (
             mock.patch.object(tempfile, "tempdir", None),
             mock.patch.dict(
                 os.environ,
-                {name: str(input_root) for name in ("TMPDIR", "TEMP", "TMP")},
+                {
+                    name: str(poison)
+                    for name in ("TMPDIR", "TEMP", "TMP", "LOCALAPPDATA")
+                },
             ),
-            folder_review.safe_runtime(str(input_root), self.root / "output.xlsx"),
+            folder_review.safe_runtime(str(source), self.root / "output.xlsx"),
         ):
-            self.assertFalse(
-                folder_review.path_within(tempfile.gettempdir(), str(input_root))
+            workspace = Path(tempfile.gettempdir())
+            self.assertEqual(workspace.parent, self.root / "folder-review-data")
+            self.assertFalse(poison.exists())
+        self.assertFalse(workspace.exists())
+        self.assertEqual(list(source.iterdir()), [])
+
+    def test_portable_self_scan_skips_support_and_preserves_user_files(self):
+        (self.root / "notes.txt").write_bytes(b"unchanged")
+        args = folder_review.parse_args(["--workers", "1"])
+        report = self.root / "folder-review.xlsx"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                folder_review.execute_review(args, str(self.root), report), 0
             )
-        self.assertEqual(list(input_root.iterdir()), [])
+        self.assertEqual((self.root / "notes.txt").read_bytes(), b"unchanged")
+        self.assertTrue(list((self.root / "folder-review-data/logs").glob("*.jsonl")))
+        self.assertFalse(list((self.root / "folder-review-data").glob("work-*")))
+        book = load_workbook(report, read_only=True)
+        try:
+            sheet = book["folder_review"]
+            headings = next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
+            names = [
+                row[headings.index("File name")]
+                for row in sheet.iter_rows(min_row=7, values_only=True)
+            ]
+            self.assertEqual(names, ["notes.txt"])
+        finally:
+            book.close()
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        with self.assertRaisesRegex(ValueError, "beside the application"):
+            folder_review.execute_review(args, str(self.root), outside / "report.xlsx")
+        with self.assertRaisesRegex(ValueError, "support folder"):
+            folder_review.execute_review(
+                args, str(self.root / "folder-review-data"), report
+            )
+
+    def test_portable_support_link_is_rejected_without_writes(self):
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        link = self.root / "folder-review-data"
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd.exe", "/c", "mklink", "/J", str(link), str(outside)],
+                check=True,
+                capture_output=True,
+            )
+        else:
+            link.symlink_to(outside, target_is_directory=True)
+        try:
+            with self.assertRaisesRegex(ValueError, "normal directory"):
+                folder_review.portable_directory()
+            self.assertEqual(list(outside.iterdir()), [])
+        finally:
+            if os.name == "nt":
+                link.rmdir()
+            else:
+                link.unlink()
 
     def test_long_physical_archive_and_output_paths(self) -> None:
         deep_folder = str(self.root)

@@ -1,8 +1,8 @@
-Folder Review 0.17.0 - Windows x86-64
+Folder Review 0.18.0 - Windows x86-64
 
 Copy this folder to a writable local folder on the Windows computer.
 Double-click folder-review.exe to open the desktop window. Browse for a folder
-or paste its path, choose the report path, and click Create Excel report.
+or paste its path and click Create Excel report.
 Progress, COMPLETE/PARTIAL status and Open report folder stay in the window.
 Choose Quick inventory (no duplicate hashing), Find duplicates (filtered, default),
 or Full fingerprints (slow). Archive integrity checks remain enabled in all modes.
@@ -11,15 +11,17 @@ Use --cli for the terminal folder prompt; --gui alone opens the window.
 Local folders, mapped drives, and UNC paths are supported.
 
 For command-line use:
-  folder-review.exe --root "C:\Data" --output "C:\Reports\folder-review.xlsx"
+  folder-review.exe --root "C:\Data"
 
-The output folder must already exist. Without --output, folder-review.xlsx is
-saved beside the EXE. The EXE and report may be inside the target. The selected
-report is excluded on every scan. Reports may be local or on SMB; existing
-reports are atomically replaced. Other input files remain protected. Only the
-report and its staging file may be written there; the parent directory timestamp
-changes. Runtime and processing workspaces remain local outside the target.
-Paste a quoted/unquoted folder path with Ctrl+V or Shift+Insert, then press Enter.
+Keep folder-review.exe and _internal together in a writable local folder.
+Reports stay beside the EXE; --output may change the filename in that same folder.
+No other output folder is accepted. Application logs and temporary work stay in
+folder-review-data beside the EXE. No AppData or OS-temp extraction/fallback.
+Move/copy/delete this whole folder as one unit. Work folders are cleaned on normal
+exit; a crash can leave them. Close all instances before deleting leftovers.
+The tool may be inside input: its runtime, support folder and report are excluded.
+Input itself cannot be the runtime/support directory. Existing reports are atomically
+replaced; other input files remain read-only. SMB input is supported.
 
 Workers default to auto: CPU-based, up to 16 local or 32 network workers.
 Use --workers 1..64 to override; auto is a bounded heuristic, not a guarantee
@@ -31,9 +33,9 @@ Copy its text from the formula bar and edit the first SELECTCOLUMNS line.
 Scanning does not access external web services or download dependencies.
 SMB inputs remain supported; reads use operating-system file-sharing traffic.
 Input is read-only except the selected report and its atomic-save staging file.
-Archive/XLSX processing work files stay local outside input.
+Archive/XLSX work files stay in folder-review-data beside the EXE.
 OS access-time updates, cloud hydration and antivirus are outside app control.
-The EXE initially unpacks to OS temp; input containing that runtime is rejected.
+The bundled runtime loads directly from _internal; keep it beside the EXE.
 
 The default workbook omits advanced filesystem metadata and the raw suffix,
 retaining Hidden and all content/inspection columns. Add --full-metadata for all columns.
@@ -89,5 +91,5 @@ Application safeguards are not an OS sandbox; see SECURITY.md for the limits.
 Neutral diagnostics are enabled by default; the local JSONL path appears in progress.
 Logs contain counts, timings and byte totals, no input names, paths, content, hashes,
 machine/account identifiers or exception text. Five-second heartbeats cover stalls.
-Use --log to choose a new local file outside input; --no-log disables logging.
-Normally logs are in %LOCALAPPDATA%\FolderReview\Logs. No logs are uploaded.
+Use --log for a new file in folder-review-data/logs; --no-log disables logging.
+No logs are uploaded.

@@ -5,19 +5,18 @@ use the same scanner. Supports local folders, SMB shares and mapped drives.
 
 ## Windows — ready to run
 
-[Download EXE](../../releases/latest/download/folder-review.exe) ·
-[Download full package](../../releases/latest/download/folder-review-windows-x64.zip) ·
+[Download portable ZIP](../../releases/latest/download/folder-review-windows-x64.zip) ·
 [Releases and checksums](../../releases/latest)
 
-The x86-64 EXE includes Python and 7-Zip. Copy it to a
-local folder and run it, or use:
+Extract the ZIP to a writable local folder. Keep `folder-review.exe` and
+`_internal` together; Python and 7-Zip are included. No installation is needed.
 
 ```powershell
-.\folder-review.exe --root "C:\Data" --output "C:\Reports\folder-review.xlsx"
+.\folder-review.exe --root "C:\Data"
 ```
 
 Double-click `folder-review.exe` to open the desktop window. Browse for a folder
-or paste its path, choose the report location, and click **Create Excel report**.
+or paste its path and click **Create Excel report**.
 The window shows progress and COMPLETE/PARTIAL status, with an action to open the
 report folder. Choose **Quick inventory** (no duplicate hashing), **Find duplicates**
 (filtered, default), or **Full fingerprints** (fully reads every candidate/leaf,
@@ -29,12 +28,21 @@ in its installation. The standalone EXE bundles Tcl/Tk.
 Passing command-line options preserves CLI operation. Use `--cli` for the
 terminal folder prompt, or `--gui` on its own for the desktop window.
 
-The output folder must exist. Without `--output`, the report is saved beside
-the program. The tool and report may sit inside the scanned folder; the selected
-report is excluded from the inventory. Local and SMB report destinations are
-supported. Existing reports are atomically replaced after a successful save.
-Paste a quoted or unquoted folder path at the prompt (Ctrl+V or Shift+Insert in
-Windows), then press Enter.
+All application-created files stay in this portable folder:
+
+- `folder-review.exe` and `_internal/`: program and bundled runtime; keep together.
+- `folder-review.xlsx`: report, atomically replaced after a successful save.
+- `folder-review-data/logs/`: neutral diagnostic JSONL files.
+- `folder-review-data/work-*/`: per-run temporary archive/XLSX work; removed on normal exit.
+
+The working directory, TEMP/TMP and AppData are not used for application state
+or runtime extraction. Move/copy/delete the whole folder as one unit. A crash
+can leave a work folder; close all instances before removing leftovers.
+Reports always stay beside the program; `--output` may change the filename in
+that same folder. Other destinations are rejected. An unwritable program folder
+fails clearly instead of falling back elsewhere. The tool may sit inside the
+input: its support/runtime folders and selected report are excluded from scans.
+The selected input cannot itself be a tool support/runtime folder.
 
 ## Python
 
@@ -128,29 +136,27 @@ uv sync --frozen --no-dev
   optimum; `--workers 1..64` remains available. No trial scans or extra input reads
   are performed to choose workers.
 - A neutral JSONL diagnostic log is enabled by default. Its location is shown in
-  progress: normally `%LOCALAPPDATA%\FolderReview\Logs` on Windows, otherwise a
-  `folder-review-logs` directory beside the local processing workspace. Logs
-  stay local and outside input. They contain phase timings, active-operation
-  ages, workers, counts and application bytes read, **no input names, paths,
+  progress: `folder-review-data/logs/` beside the application. Logs contain
+  phase timings, active-operation ages, workers, counts and application bytes read,
+  **no input names, paths,
   content, hashes, machine/account names or exception text**. Heartbeats every
   5 seconds also cover stalled operations. Repeated heartbeats stop after 8 MiB;
   the final record is still attempted. Logging failures warn without discarding
   the report. Keep the log after a slow run; it separates listing, classification,
   metadata queries, hashing, archives and writing. Operation times sum across
   workers and can exceed elapsed time; byte counts are not network-traffic measurements.
-  `--log "C:\Reports\review.jsonl"` selects a new local file outside input;
+  `--log` selects a new file in that same logs folder;
   existing files are never overwritten. Use `--no-log` to disable diagnostics.
 - `scan_status` records COMPLETE (exit `0`) or PARTIAL (exit `2`). Fatal errors
   return `1`. Archive integrity failures and inspection limits remain visible.
 - No web requests, telemetry or runtime downloads. Existing input files remain
   read-only except the explicitly selected report. Its temporary atomic-save file
   may also be created beside it; saving changes the parent directory timestamp.
-  The application runs locally; archive/XLSX processing workspaces stay local
-  outside the inspected tree. Input and report output may use SMB. URLs, WebDAV and known other network
-  filesystems are rejected. Links
-  are listed without being followed. OS access-time updates/cloud hydration may
-  still occur. The one-file runtime unpacks to the Windows local profile temporary directory
-  before scanning; remote unpacked runtimes are rejected.
+  Runtime, logs and archive/XLSX processing files stay beside the application.
+  Input may use SMB; reports are local beside the program. URLs, WebDAV and known
+  other network filesystems are rejected. Links are listed without being followed.
+  OS access-time updates/cloud hydration may still occur. Application guards are
+  not an OS sandbox; Windows, antivirus and other processes can maintain their own files.
 
 ## Inspect or rebuild
 

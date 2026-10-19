@@ -44,7 +44,7 @@ The build publishes `dist/` only after:
 - [verify.py](verify.py) compares embedded scanner bytecode with current source,
   checks bundled extractor hashes, and compares complete Python/EXE workbooks.
 - [reproduce.py](reproduce.py) rebuilds from a fresh source copy in a different
-  directory and requires an identical EXE SHA-256.
+  directory and requires an identical EXE and every _internal file SHA-256.
 - [sbom.py](sbom.py) verifies wheel code against RECORD and requires a known
   hashed origin for every native payload; `components.json` records the result.
 - [compliance.py](compliance.py) verifies and packages the corresponding LGPL
@@ -71,12 +71,13 @@ workflow. Tcl/Tk is bundled. The console-enabled bootloader hides only its own
 new console, preserving an existing terminal and redirected CLI streams.
 The adapter places default output beside the EXE, selects bundled 7-Zip for RAR,
 and escapes unprintable console diagnostics. Scanner logic is shared unchanged.
-The runtime unpacks beneath `%LOCALAPPDATA%\Temp` (independent of TEMP/TMP)
-and is normally removed on exit. A remote unpacked runtime is rejected. Inputs containing
-that runtime are rejected. The EXE and selected report may be inside input.
-Reports may use SMB; only the selected report and its atomic-save staging file
-are permitted write exceptions. Processing workspaces stay local outside input.
-The report is excluded from the inventory. Other input writes remain blocked.
+The standard PyInstaller `onedir` build keeps the bundled runtime in `_internal`
+beside the EXE. There is no one-file extraction, custom bootloader or native launcher.
+Users must keep the EXE and `_internal` together. The portable ZIP includes both.
+Reports stay beside the program. Logs and per-run temporary work stay in
+`folder-review-data`; no AppData/OS-temp fallback is used. The report and owned
+runtime/support subtrees are excluded if the tool is inside input. Other input
+writes remain blocked. Source and frozen deliveries share this behavior.
 
 Windows 11 is tested. Synthetic tests cannot cover every possible input;
 archive time limits remain cooperative rather than forcibly interrupting every

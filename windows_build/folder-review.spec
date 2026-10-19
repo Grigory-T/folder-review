@@ -45,13 +45,15 @@ for dest_name, source_name, _ in a.datas:
         ordered.replace(library)
 pyz = PYZ(a.pure)
 exe = EXE(
-    pyz, a.scripts, a.binaries, a.datas, [],
+    pyz, a.scripts, [],
+    exclude_binaries=True,
     name=name,
     debug=False,
     strip=False,
     upx=False,
     console=True,
     hide_console=None if testing else "hide-early",
-    runtime_tmpdir=r"%LOCALAPPDATA%\Temp",
     version=str(root / 'windows_build' / 'version.txt'),
 )
+
+collection = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name=name)

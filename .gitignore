@@ -10,3 +10,4 @@ folder-review.xlsx
 .build/
 .build-venv/
 dist/
+folder-review-data/
