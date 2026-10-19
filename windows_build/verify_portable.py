@@ -65,6 +65,7 @@ def invoke(folder, args, expected=0):
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     assert run.returncode == expected, (run.returncode, run.stdout, run.stderr)
     timings.append(round(time.perf_counter() - start, 3))

@@ -108,7 +108,7 @@ def main():
             {
                 key: value
                 for key, value in report.items()
-                if key != "source_input_sha256"
+                if key not in {"source_input_sha256", "runtime_file_sha256"}
             }
         )
     )
