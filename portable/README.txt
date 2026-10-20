@@ -1,4 +1,4 @@
-FOLDER REVIEW 0.19.0 - WINDOWS X86-64
+FOLDER REVIEW 0.19.1 - WINDOWS X86-64
 
 1. Extract the complete ZIP into a writable local folder.
 2. Open settings.ini in Windows Notepad. Set folder to the directory to inspect.

@@ -63,7 +63,7 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 OUTPUT_FILE = "folder-review.xlsx"
 
 # Increment with the release version; included in neutral diagnostic logs.
-TOOL_VERSION = "0.19.0"
+TOOL_VERSION = "0.19.1"
 
 
 class PerformanceLog:
@@ -4314,11 +4314,16 @@ def performance_log(args, root: str, progress=None):
     log = None
     try:
         directory = portable_directory() / "logs"
-        if directory.exists() and (
-            directory.is_symlink()
-            or resolved_path(directory) != normalized_key(directory)
-        ):
-            raise ValueError("The diagnostic folder must not be a link.")
+        if os.path.lexists(extended_path(directory)):
+            info = os.lstat(extended_path(directory))
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & 0x400
+            ):
+                raise ValueError(
+                    "The diagnostic folder must be a normal directory, not a link."
+                )
         directory.mkdir(exist_ok=True)
         if explicit:
             path = Path(absolute_path(pasted_path(args.log)))

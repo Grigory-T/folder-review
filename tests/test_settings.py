@@ -2,6 +2,8 @@
 
 import contextlib
 import io
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -152,6 +154,35 @@ class SettingsTests(unittest.TestCase):
                     "subprocess.Popen",
                     (str(backend), [str(backend), "e", "input.zip"], None, None),
                 )
+
+    def test_linked_log_directory_is_rejected_without_outside_writes(self):
+        source = self.root / "input"
+        source.mkdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        link = core.portable_directory() / "logs"
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd.exe", "/c", "mklink", "/J", str(link), str(outside)],
+                check=True,
+                capture_output=True,
+            )
+        else:
+            link.symlink_to(outside, target_is_directory=True)
+        args = core.parse_args(["--log", str(link / "escape.jsonl")])
+        try:
+            with (
+                core.safe_runtime(str(source), self.root / "report.xlsx"),
+                self.assertRaisesRegex(ValueError, "normal directory"),
+                core.performance_log(args, str(source)),
+            ):
+                self.fail("A linked log directory was accepted")
+            self.assertEqual(list(outside.iterdir()), [])
+        finally:
+            if os.name == "nt":
+                link.rmdir()
+            else:
+                link.unlink()
 
 
 if __name__ == "__main__":
