@@ -14,7 +14,7 @@ def configure_backend():
     backend = SUPPORT / "state/backend/7z.exe"
     if not backend.is_file():
         raise FileNotFoundError(
-            "The verified archive backend is missing. Extract a fresh copy and run SETUP.bat."
+            "The verified archive backend is missing. Extract a fresh copy and run folder-review.bat."
         )
     core.rarfile.SEVENZIP_TOOL = str(backend)
     core.rarfile.tool_setup(
@@ -31,6 +31,6 @@ core.configure_rar_backend = configure_backend
 if __name__ == "__main__":
     if sys.argv[1:]:
         raise SystemExit(
-            "Edit settings.ini; the portable entry point accepts no scan arguments."
+            "Edit folder-review.ini; the portable entry point accepts no scan arguments."
         )
     raise SystemExit(core.main())

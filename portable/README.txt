@@ -1,51 +1,43 @@
-FOLDER REVIEW 0.19.1 - WINDOWS X86-64
+FOLDER REVIEW 0.20.0 - WINDOWS X86-64
 
-1. Extract the complete ZIP into a writable local folder.
-2. Open settings.ini in Windows Notepad. Set folder to the directory to inspect.
-   A local path, UNC SMB path, or mapped SMB drive is supported. Save the file.
-3. Double-click SETUP.bat. It prepares the fixed runtime once, then scans.
-   Use this same file for every later scan. Later unchanged starts are offline.
+Extract into a writable LOCAL folder. Two tools share one verified runtime:
 
-No Python, uv, 7-Zip installation or administrator account is required.
-The first setup needs Internet access. Setup verifies fixed official downloads;
-Python packages are installed from a hash-locked, wheel-only requirements file.
-There is no update check or target-side dependency resolution.
+1. folder-review.bat: create a folder inventory and embedded comparison state.
+   Edit folder-review.ini in Notepad. Set folder; keep state_mode=quick for no
+   extra state-content reads. Report: folder-review.xlsx (filename configurable).
+2. folder-change-review.bat: compare two SAVED XLSX states.
+   Edit folder-change-review.ini. Set before and after to their full file paths.
+   Report: folder-change-review.xlsx. The original project can be offline.
 
-The top level contains SETUP.bat, settings.ini, support/ and the generated report.
-Report: folder-review.xlsx, or another filename configured in settings.ini.
-All code, runtime, caches, setup history and scan diagnostics stay under support/.
-Temporary scan work is cleaned on normal completion. A crash can leave work-*.
-Close all instances before reviewing/removing leftovers. No AppData/OS-temp fallback.
-The support folder is technical: edit only settings.ini. Notepad UTF-8 and UTF-16
-with a BOM are supported. Paths are literal, including backslashes and percent signs.
-There is no GUI and no folder prompt in normal use.
+Keep the first workbook under a separate name before creating the second.
+Both states must use the same state_mode (quick, sampled, full). Keep manually
+renamed/copied states OUTSIDE the inspected project. Comparison treats archives
+as single physical files and excludes temporary files and virtual folder rows.
+Unknown means incomplete coverage; review Read issues. The visible inventory
+still expands archives. Workbooks older than 0.20 lack comparison data: create
+new states. Keep the hidden comparison-state sheet intact; visible cell edits do
+not change it. Reports and embedded states are private, unencrypted project data.
 
-SETUP.bat exit codes: 0 COMPLETE, 2 PARTIAL report, 1 review/configuration failure,
-10 setup/environment failure, 30 launcher failure. A PARTIAL report is usable;
-read scan_status for missing coverage and archive errors. Existing reports are
-atomically replaced only after a successful save. Only one instance per tool folder.
+Both INI files support literal paths, quotes, percent signs, Unicode, UTF-8 and
+UTF-16 with BOM. No escaping, GUI, Python syntax or normal command arguments.
+The first entry point used downloads the fixed pinned Python/uv/packages/7-Zip;
+later unchanged starts are offline. No update check or dependency resolution.
+No global install or administrator installation is needed. All support files,
+runtime, caches, logs and temporary processing stay under support/state/.
+Reports stay beside the batch files. No AppData/system-temp fallback.
 
-All previous scanner/report behavior remains: ZIP/RAR/7z inspection, documents as
-leaf files, exact duplicate modes, virtual rows, English technical fields and XLSX.
-Duplicates: off is quick inventory, filtered is the default lossless candidate
-filter, all fully fingerprints readable files. Archive CRC checks stay enabled.
-User input remains read-only; the selected report and owned support state are
-write exceptions when the tool itself is inside input. Runtime/support/report
-are excluded from such self-scans. Do not select support itself as input.
+Keep the WHOLE prepared folder when moving it. A move rebuilds its venv from
+its retained cache offline. Incomplete cache fails; use a fresh extraction for
+online setup/repair rather than mixing releases. Only one operation per folder.
+Temporary work cleans normally; crashes can leave work-* under support/state.
+Close all instances before cleaning leftovers. Input files stay read-only.
+SMB inputs are supported; execute the tool and keep outputs on a local drive.
 
-Copy the WHOLE folder when moving it. A changed location rebuilds only the local
-venv from the retained cache, offline; settings and reports are preserved.
-Do not remove the cache if you need offline relocation. If the copied cache is
-incomplete, use a fresh extraction and online setup instead of overlaying versions.
-Never mix a prepared state with another tool release. No latest-version selectors.
+Exit codes: 0 complete, 2 usable partial report, 1 review/configuration error,
+10 setup/environment failure, 30 batch launcher failure. Failed saves preserve
+previous reports. Neutral diagnostics omit input names, paths and contents;
+console/report data deliberately contains them. Windows may maintain OS state.
 
-support/state/setup.jsonl records fixed infrastructure events/exit codes only.
-support/state/logs/ contains neutral aggregate scan diagnostics. No input names,
-paths, contents, hashes or machine/account names are recorded in these logs.
-Console/report data can contain the selected paths and original names; keep it private.
-Windows, antivirus and other programs can maintain their own state; this tool is
-not an OS sandbox. Checksum/provenance checks do not prove absence of unknown bugs.
-
-Original code: MIT. See LICENSE, THIRD_PARTY.txt and SECURITY.md in support/.
-Sources and fixed download hashes are in the matching GitHub release/repository.
-For developer use, folder_review.py also supports its existing command-line options.
+See SECURITY.md, LICENSE and THIRD_PARTY.txt. Source, pins, build process and
+validation are published with the matching release. Safeguards are application
+checks, not an OS sandbox or a guarantee against unknown upstream flaws.

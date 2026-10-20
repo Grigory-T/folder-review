@@ -111,7 +111,14 @@ class FolderReviewTests(unittest.TestCase):
         self.assertEqual(records[-1]["counters"]["physical_items_completed"], 1)
         self.assertEqual(
             {r["phase"] for r in records},
-            {"starting", "enumeration", "inspection", "hashing", "report"},
+            {
+                "starting",
+                "enumeration",
+                "comparison_state",
+                "inspection",
+                "hashing",
+                "report",
+            },
         )
         self.assertTrue(output.is_file())
         self.assertEqual(len(list(source.iterdir())), 1)

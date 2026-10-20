@@ -63,7 +63,7 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 OUTPUT_FILE = "folder-review.xlsx"
 
 # Increment with the release version; included in neutral diagnostic logs.
-TOOL_VERSION = "0.19.1"
+TOOL_VERSION = "0.20.0"
 
 
 class PerformanceLog:
@@ -484,6 +484,7 @@ class FileProperties:
     modified_at: datetime | None
     metadata_changed_at: datetime | None
     created_at: datetime | None
+    modified_ns: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -1588,6 +1589,7 @@ def file_properties(name: str, result: os.stat_result) -> FileProperties:
     reparse_tag = getattr(result, "st_reparse_tag", None)
     execute_bits = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
     return FileProperties(
+        modified_ns=result.st_mtime_ns,
         permissions=stat.filemode(result.st_mode),
         hidden=yes_no(hidden),
         read_only=yes_no(read_only),
@@ -3488,6 +3490,7 @@ def write_workbook(
     report: RunReport | None = None,
     *,
     full_metadata: bool = False,
+    comparison_state: dict | None = None,
 ) -> None:
     if len(rows) > EXCEL_MAX_DATA_ROWS:
         raise ValueError(
@@ -3954,6 +3957,17 @@ def write_workbook(
                 }[report.duplicate_mode],
             ),
         ]
+        if comparison_state is not None:
+            summary_rows.extend(
+                [
+                    ("Comparison state mode", comparison_state["review_mode"]),
+                    ("Comparison state files", comparison_state["file_count"]),
+                    (
+                        "Comparison state read issues",
+                        len(comparison_state["read_errors"]),
+                    ),
+                ]
+            )
         for label, value in summary_rows:
             if isinstance(value, datetime):
                 number_format = "yyyy-mm-dd hh:mm:ss"
@@ -4093,6 +4107,11 @@ def write_workbook(
             "Copy the text of A1 from the formula bar into a Power Pivot measure. Edit the first SELECTCOLUMNS line for your table and column. This cell is text, not an Excel formula.",
         )
 
+        if comparison_state is not None:
+            from review_state import write_state
+
+            write_state(wb, comparison_state)
+
 
 # Command-line entry point ---------------------------------------------------
 
@@ -4180,7 +4199,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--cli",
         action="store_true",
-        help="Use the terminal folder prompt (normally edit settings.ini)",
+        help="Use the terminal folder prompt (normally edit folder-review.ini)",
     )
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
     parser.add_argument(
@@ -4213,6 +4232,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         const="all",
         dest="duplicates",
         help="Alias for --duplicates all (more SMB I/O)",
+    )
+    parser.add_argument(
+        "--state-mode",
+        choices=("quick", "sampled", "full"),
+        default="quick",
+        help="Saved change state: quick size/time (default), sampled SHA-256, or full SHA-256 reads",
     )
     parser.add_argument(
         "--workers",
@@ -4418,7 +4443,10 @@ def report_exclusions(output: Path, root: str) -> set[str]:
 def scan_exclusions(output: Path, root: str) -> set[str]:
     """Skip changing tool-owned subtrees, including mapped aliases, once per scan."""
     excluded = report_exclusions(output, root)
-    for directory in support_directories():
+    for directory in [
+        *support_directories(),
+        application_directory() / "folder-change-review.xlsx",
+    ]:
         excluded.update(report_exclusions(directory, root))
     return excluded
 
@@ -4451,6 +4479,18 @@ def scan_and_report(
     )
     emit(
         f"Physical items found: {sum(not item.virtual_folder for item in physical_files):,}"
+    )
+    from review_state import capture_state
+
+    state_mode = getattr(args, "state_mode", "quick")
+    emit(f"Comparison state mode: {state_mode}")
+    if _performance_log is not None:
+        _performance_log.set_phase("comparison_state")
+    comparison_state = capture_state(
+        root_folder, physical_files, stats, state_mode, args.workers, output_path
+    )
+    emit(
+        f"Comparison state: {comparison_state['file_count']:,} files | read issues: {len(comparison_state['read_errors']):,}"
     )
     physical_files, physical_items_found = apply_physical_row_limit(
         physical_files,
@@ -4493,7 +4533,11 @@ def scan_and_report(
 
     errors = sum(row.error is not None for row in rows)
     partial = bool(
-        stats.skipped_folders or stats.skipped_entries or stats.diagnostics or errors
+        stats.skipped_folders
+        or stats.skipped_entries
+        or stats.diagnostics
+        or errors
+        or comparison_state["read_errors"]
     )
     report = RunReport(
         status="PARTIAL" if partial else "COMPLETE",
@@ -4514,7 +4558,12 @@ def scan_and_report(
     if _performance_log is not None:
         _performance_log.set_phase("report")
     write_workbook(
-        rows, output_path, root_folder, report, full_metadata=args.full_metadata
+        rows,
+        output_path,
+        root_folder,
+        report,
+        full_metadata=args.full_metadata,
+        comparison_state=comparison_state,
     )
 
     elapsed = time.monotonic() - started
@@ -4552,8 +4601,8 @@ def show_licenses() -> None:
             print(path.read_text(encoding="utf-8", errors="replace"))
 
 
-def run_settings(path: Path, progress=None) -> int:
-    """Read literal Notepad settings; no interpolation, shell or code evaluation."""
+def read_ini(path: Path, section: str, allowed: set[str]):
+    """Read literal Notepad settings shared by both entry points."""
     data = path.read_bytes()
     encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
     parser = configparser.ConfigParser(interpolation=None)
@@ -4561,8 +4610,33 @@ def run_settings(path: Path, progress=None) -> int:
         parser.read_string(data.decode(encoding))
     except (UnicodeError, configparser.Error) as exc:
         raise ValueError(
-            "Cannot read settings.ini. Save a valid INI file as UTF-8 or UTF-16 with BOM."
+            f"Cannot read {path.name}. Use valid INI in UTF-8 or BOM UTF-16."
         ) from exc
+    if parser.sections() != [section] or parser.defaults():
+        raise ValueError(
+            f"{path.name} must have exactly one [{section}] section and no DEFAULT settings."
+        )
+    if set(parser[section]) - allowed:
+        raise ValueError(
+            f"Unknown setting in {path.name}. Use the supplied setting names."
+        )
+    return parser
+
+
+def report_filename(name: str) -> str:
+    name = name.strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or any(c in name for c in "/\\:")
+        or Path(name).suffix.lower() != ".xlsx"
+    ):
+        raise ValueError("report must be an .xlsx filename, without a folder path.")
+    return name
+
+
+def run_settings(path: Path, progress=None) -> int:
+    """Read literal settings; no interpolation, shell or code evaluation."""
     allowed = {
         "folder",
         "report",
@@ -4573,26 +4647,22 @@ def run_settings(path: Path, progress=None) -> int:
         "max_expanded_gib",
         "max_archive_seconds",
         "max_rows",
+        "state_mode",
     }
-    if parser.sections() != ["review"] or parser.defaults():
-        raise ValueError(
-            "settings.ini must have exactly one [review] section and no DEFAULT settings."
-        )
-    settings = parser["review"]
-    if set(settings) - allowed:
-        raise ValueError(
-            "Unknown setting in settings.ini. Use the supplied setting names."
-        )
+    settings = read_ini(path, "review", allowed)["review"]
     root = pasted_path(settings.get("folder", ""))
     if not root:
         raise ValueError(
-            "Edit folder in settings.ini with Notepad, save the file, then run SETUP.bat again."
+            "Edit folder in folder-review.ini with Notepad, save the file, then run folder-review.bat again."
         )
     args = parse_args([])
     args.workers = worker_count(settings.get("workers", "auto"))
     args.duplicates = settings.get("duplicates", "filtered").strip().lower()
     if args.duplicates not in {"off", "filtered", "all"}:
         raise ValueError("duplicates must be off, filtered, or all.")
+    args.state_mode = settings.get("state_mode", "quick").strip().lower()
+    if args.state_mode not in {"quick", "sampled", "full"}:
+        raise ValueError("state_mode must be quick, sampled, or full.")
     args.full_metadata = settings.getboolean("full_metadata", False)
     args.no_log = not settings.getboolean("diagnostics", True)
     for key in ("max_expanded_gib", "max_archive_seconds"):
@@ -4602,14 +4672,7 @@ def run_settings(path: Path, progress=None) -> int:
                 raise ValueError("Archive limits must be finite non-negative numbers.")
             setattr(args, key, value)
     args.max_rows = row_limit(settings.get("max_rows", str(EXCEL_MAX_DATA_ROWS)))
-    name = settings.get("report", OUTPUT_FILE).strip()
-    if (
-        not name
-        or name in {".", ".."}
-        or any(c in name for c in "/\\:")
-        or Path(name).suffix.lower() != ".xlsx"
-    ):
-        raise ValueError("report must be an .xlsx filename, without a folder path.")
+    name = report_filename(settings.get("report", OUTPUT_FILE))
     return execute_review(args, root, application_directory() / name, progress)
 
 
@@ -4624,7 +4687,7 @@ def main() -> int:
             show_licenses()
             return 0
         if not sys.argv[1:]:
-            return run_settings(application_directory() / "settings.ini")
+            return run_settings(application_directory() / "folder-review.ini")
         return run()
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

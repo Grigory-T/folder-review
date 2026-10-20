@@ -1,0 +1,1093 @@
+{
+  "upstream": "https://github.com/Grigory-T/folder-change-review",
+  "commit": "ac7070480df380016e5c8b3ddd90214638481e9f",
+  "normalization": "Workbook creation/modification timestamps and XML line endings only",
+  "cases": [
+    {
+      "name": "quick-complete",
+      "before": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "quick",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\deleted.pdf",
+            "parts": [
+              "deleted.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          }
+        ],
+        "read_errors": []
+      },
+      "after": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "quick",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "mtime_ns": 1700000000000000100
+          },
+          {
+            "path": "C:\\Projects\\Example\\added.pdf",
+            "parts": [
+              "added.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000100
+          }
+        ],
+        "read_errors": []
+      },
+      "expected_rows": [
+        {
+          "parts": [
+            "Common",
+            "stable.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\Common\\stable.pdf",
+          "FileName": "stable.pdf",
+          "Extension": "pdf",
+          "Status": "Unchanged",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "added.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\added.pdf",
+          "FileName": "added.pdf",
+          "Extension": "pdf",
+          "Status": "Added",
+          "Added": 1,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": null,
+          "SizeB": 4,
+          "SizeDelta": 4
+        },
+        {
+          "parts": [
+            "changed.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\changed.txt",
+          "FileName": "changed.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "deleted.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\deleted.pdf",
+          "FileName": "deleted.pdf",
+          "Extension": "pdf",
+          "Status": "Deleted",
+          "Added": null,
+          "Deleted": 1,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": -4
+        },
+        {
+          "parts": [
+            "timestamp.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\timestamp.txt",
+          "FileName": "timestamp.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        }
+      ],
+      "expected_workbook_sha256": {
+        "[Content_Types].xml": "c9e07af4a58801f88cc56b609f1a3e4f93f575d8a2eddf54759f8bb134638699",
+        "_rels/.rels": "1285b20099c64699001f9d90ea040ca1c177fa99bc3ae8a841128874820f01a4",
+        "xl/_rels/workbook.xml.rels": "075a012b1fb44946d69250bb48a45a73635f2217f3817d017b347b0e65f1af66",
+        "xl/worksheets/sheet1.xml": "e4757fe8ade0fde43c90902573231c8b97fe46419b699b187d3b5ba730a1fd48",
+        "xl/workbook.xml": "429fc2fef6f95ebb620126c509f4d032707123cf29bb63c8c39dbf9052781811",
+        "xl/styles.xml": "66ad44dd5452dbcc64e085db1bb31cf6d7a9227be516384d7dfd52080b78f86c",
+        "xl/theme/theme1.xml": "75104b2164c20dab2578383d827deac3a7eec077c3f7c99a4099a551fdebb134",
+        "docProps/core.xml": "6e20ee649676f17654942233b4513eb34521ad36dda38a95f5f53f14aefe8d6b",
+        "docProps/app.xml": "f2770537c6122cbec46eb0c483d79c0fc394d807af29e2b9d31cc7154b4c581c"
+      }
+    },
+    {
+      "name": "quick-partial",
+      "before": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "quick",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\deleted.pdf",
+            "parts": [
+              "deleted.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          }
+        ],
+        "read_errors": []
+      },
+      "after": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "quick",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "mtime_ns": 1700000000000000100
+          },
+          {
+            "path": "C:\\Projects\\Example\\added.pdf",
+            "parts": [
+              "added.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000100
+          }
+        ],
+        "read_errors": [
+          {
+            "path": "C:\\Projects\\Example\\Common",
+            "parts": [
+              "Common"
+            ],
+            "kind": "directory",
+            "errno": 13,
+            "winerror": null,
+            "message": "=Access denied"
+          }
+        ]
+      },
+      "expected_rows": [
+        {
+          "parts": [
+            "Common",
+            "stable.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\Common\\stable.pdf",
+          "FileName": "stable.pdf",
+          "Extension": "pdf",
+          "Status": "Unknown",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": null
+        },
+        {
+          "parts": [
+            "added.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\added.pdf",
+          "FileName": "added.pdf",
+          "Extension": "pdf",
+          "Status": "Added",
+          "Added": 1,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": null,
+          "SizeB": 4,
+          "SizeDelta": 4
+        },
+        {
+          "parts": [
+            "changed.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\changed.txt",
+          "FileName": "changed.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "deleted.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\deleted.pdf",
+          "FileName": "deleted.pdf",
+          "Extension": "pdf",
+          "Status": "Deleted",
+          "Added": null,
+          "Deleted": 1,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": -4
+        },
+        {
+          "parts": [
+            "timestamp.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\timestamp.txt",
+          "FileName": "timestamp.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        }
+      ],
+      "expected_workbook_sha256": {
+        "[Content_Types].xml": "5bc51505ac2e9ccbaf881beb49f630909fca7771867d59c6e5868c5075bb22cc",
+        "_rels/.rels": "1285b20099c64699001f9d90ea040ca1c177fa99bc3ae8a841128874820f01a4",
+        "xl/_rels/workbook.xml.rels": "835a5b8de8edc54cc25af7a5ac43bd6b8c3b30088a1121963b67d2d398b44830",
+        "xl/worksheets/sheet1.xml": "0db86b0ae198cbd1197eac08a102569d7f49aaf9de9478c81702d1cb66d0a3bb",
+        "xl/worksheets/sheet2.xml": "a05a97eb639d868fcdc21ecc8d01abcf12d9219735f0086331943ff8c7bf5b26",
+        "xl/workbook.xml": "b69028f385f9e9bcece44f231e967c56052581af9d8b00e987de38f68f446cfe",
+        "xl/styles.xml": "66ad44dd5452dbcc64e085db1bb31cf6d7a9227be516384d7dfd52080b78f86c",
+        "xl/theme/theme1.xml": "75104b2164c20dab2578383d827deac3a7eec077c3f7c99a4099a551fdebb134",
+        "docProps/core.xml": "6e20ee649676f17654942233b4513eb34521ad36dda38a95f5f53f14aefe8d6b",
+        "docProps/app.xml": "350a424f17ac52e66406082377b19526762525327e04d5ddb4ebc3a8cbf6c872"
+      }
+    },
+    {
+      "name": "sampled-complete",
+      "before": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "sampled",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\deleted.pdf",
+            "parts": [
+              "deleted.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          }
+        ],
+        "read_errors": []
+      },
+      "after": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "sampled",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "mtime_ns": 1700000000000000100
+          },
+          {
+            "path": "C:\\Projects\\Example\\added.pdf",
+            "parts": [
+              "added.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000100
+          }
+        ],
+        "read_errors": []
+      },
+      "expected_rows": [
+        {
+          "parts": [
+            "Common",
+            "stable.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\Common\\stable.pdf",
+          "FileName": "stable.pdf",
+          "Extension": "pdf",
+          "Status": "Unchanged",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "added.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\added.pdf",
+          "FileName": "added.pdf",
+          "Extension": "pdf",
+          "Status": "Added",
+          "Added": 1,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": null,
+          "SizeB": 4,
+          "SizeDelta": 4
+        },
+        {
+          "parts": [
+            "changed.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\changed.txt",
+          "FileName": "changed.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "deleted.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\deleted.pdf",
+          "FileName": "deleted.pdf",
+          "Extension": "pdf",
+          "Status": "Deleted",
+          "Added": null,
+          "Deleted": 1,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": -4
+        },
+        {
+          "parts": [
+            "timestamp.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\timestamp.txt",
+          "FileName": "timestamp.txt",
+          "Extension": "txt",
+          "Status": "Unchanged",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        }
+      ],
+      "expected_workbook_sha256": {
+        "[Content_Types].xml": "c9e07af4a58801f88cc56b609f1a3e4f93f575d8a2eddf54759f8bb134638699",
+        "_rels/.rels": "1285b20099c64699001f9d90ea040ca1c177fa99bc3ae8a841128874820f01a4",
+        "xl/_rels/workbook.xml.rels": "075a012b1fb44946d69250bb48a45a73635f2217f3817d017b347b0e65f1af66",
+        "xl/worksheets/sheet1.xml": "ce0775efc0c16b36bda9c665cd309e630697adbca493d8184dfa9fced59cb5a7",
+        "xl/workbook.xml": "429fc2fef6f95ebb620126c509f4d032707123cf29bb63c8c39dbf9052781811",
+        "xl/styles.xml": "66ad44dd5452dbcc64e085db1bb31cf6d7a9227be516384d7dfd52080b78f86c",
+        "xl/theme/theme1.xml": "75104b2164c20dab2578383d827deac3a7eec077c3f7c99a4099a551fdebb134",
+        "docProps/core.xml": "6e20ee649676f17654942233b4513eb34521ad36dda38a95f5f53f14aefe8d6b",
+        "docProps/app.xml": "f2770537c6122cbec46eb0c483d79c0fc394d807af29e2b9d31cc7154b4c581c"
+      }
+    },
+    {
+      "name": "sampled-partial",
+      "before": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "sampled",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\deleted.pdf",
+            "parts": [
+              "deleted.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          }
+        ],
+        "read_errors": []
+      },
+      "after": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "sampled",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "mtime_ns": 1700000000000000100
+          },
+          {
+            "path": "C:\\Projects\\Example\\added.pdf",
+            "parts": [
+              "added.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000100
+          }
+        ],
+        "read_errors": [
+          {
+            "path": "C:\\Projects\\Example\\Common",
+            "parts": [
+              "Common"
+            ],
+            "kind": "directory",
+            "errno": 13,
+            "winerror": null,
+            "message": "=Access denied"
+          }
+        ]
+      },
+      "expected_rows": [
+        {
+          "parts": [
+            "Common",
+            "stable.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\Common\\stable.pdf",
+          "FileName": "stable.pdf",
+          "Extension": "pdf",
+          "Status": "Unknown",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": null
+        },
+        {
+          "parts": [
+            "added.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\added.pdf",
+          "FileName": "added.pdf",
+          "Extension": "pdf",
+          "Status": "Added",
+          "Added": 1,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": null,
+          "SizeB": 4,
+          "SizeDelta": 4
+        },
+        {
+          "parts": [
+            "changed.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\changed.txt",
+          "FileName": "changed.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "deleted.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\deleted.pdf",
+          "FileName": "deleted.pdf",
+          "Extension": "pdf",
+          "Status": "Deleted",
+          "Added": null,
+          "Deleted": 1,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": -4
+        },
+        {
+          "parts": [
+            "timestamp.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\timestamp.txt",
+          "FileName": "timestamp.txt",
+          "Extension": "txt",
+          "Status": "Unchanged",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        }
+      ],
+      "expected_workbook_sha256": {
+        "[Content_Types].xml": "5bc51505ac2e9ccbaf881beb49f630909fca7771867d59c6e5868c5075bb22cc",
+        "_rels/.rels": "1285b20099c64699001f9d90ea040ca1c177fa99bc3ae8a841128874820f01a4",
+        "xl/_rels/workbook.xml.rels": "835a5b8de8edc54cc25af7a5ac43bd6b8c3b30088a1121963b67d2d398b44830",
+        "xl/worksheets/sheet1.xml": "0a01ae7560e7bf4918328cc78157bf69cad64ac5471d59454d194bac30dded21",
+        "xl/worksheets/sheet2.xml": "a05a97eb639d868fcdc21ecc8d01abcf12d9219735f0086331943ff8c7bf5b26",
+        "xl/workbook.xml": "b69028f385f9e9bcece44f231e967c56052581af9d8b00e987de38f68f446cfe",
+        "xl/styles.xml": "66ad44dd5452dbcc64e085db1bb31cf6d7a9227be516384d7dfd52080b78f86c",
+        "xl/theme/theme1.xml": "75104b2164c20dab2578383d827deac3a7eec077c3f7c99a4099a551fdebb134",
+        "docProps/core.xml": "6e20ee649676f17654942233b4513eb34521ad36dda38a95f5f53f14aefe8d6b",
+        "docProps/app.xml": "350a424f17ac52e66406082377b19526762525327e04d5ddb4ebc3a8cbf6c872"
+      }
+    },
+    {
+      "name": "full-complete",
+      "before": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "full",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\deleted.pdf",
+            "parts": [
+              "deleted.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          }
+        ],
+        "read_errors": []
+      },
+      "after": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "full",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "mtime_ns": 1700000000000000100
+          },
+          {
+            "path": "C:\\Projects\\Example\\added.pdf",
+            "parts": [
+              "added.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000100
+          }
+        ],
+        "read_errors": []
+      },
+      "expected_rows": [
+        {
+          "parts": [
+            "Common",
+            "stable.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\Common\\stable.pdf",
+          "FileName": "stable.pdf",
+          "Extension": "pdf",
+          "Status": "Unchanged",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "added.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\added.pdf",
+          "FileName": "added.pdf",
+          "Extension": "pdf",
+          "Status": "Added",
+          "Added": 1,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": null,
+          "SizeB": 4,
+          "SizeDelta": 4
+        },
+        {
+          "parts": [
+            "changed.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\changed.txt",
+          "FileName": "changed.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "deleted.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\deleted.pdf",
+          "FileName": "deleted.pdf",
+          "Extension": "pdf",
+          "Status": "Deleted",
+          "Added": null,
+          "Deleted": 1,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": -4
+        },
+        {
+          "parts": [
+            "timestamp.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\timestamp.txt",
+          "FileName": "timestamp.txt",
+          "Extension": "txt",
+          "Status": "Unchanged",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        }
+      ],
+      "expected_workbook_sha256": {
+        "[Content_Types].xml": "c9e07af4a58801f88cc56b609f1a3e4f93f575d8a2eddf54759f8bb134638699",
+        "_rels/.rels": "1285b20099c64699001f9d90ea040ca1c177fa99bc3ae8a841128874820f01a4",
+        "xl/_rels/workbook.xml.rels": "075a012b1fb44946d69250bb48a45a73635f2217f3817d017b347b0e65f1af66",
+        "xl/worksheets/sheet1.xml": "7a8fc51f10bdca26c1635a1094474f60e9e3d6704d9cd0937ab48a22eb334f83",
+        "xl/workbook.xml": "429fc2fef6f95ebb620126c509f4d032707123cf29bb63c8c39dbf9052781811",
+        "xl/styles.xml": "66ad44dd5452dbcc64e085db1bb31cf6d7a9227be516384d7dfd52080b78f86c",
+        "xl/theme/theme1.xml": "75104b2164c20dab2578383d827deac3a7eec077c3f7c99a4099a551fdebb134",
+        "docProps/core.xml": "6e20ee649676f17654942233b4513eb34521ad36dda38a95f5f53f14aefe8d6b",
+        "docProps/app.xml": "f2770537c6122cbec46eb0c483d79c0fc394d807af29e2b9d31cc7154b4c581c"
+      }
+    },
+    {
+      "name": "full-partial",
+      "before": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "full",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\Common\\stable.pdf",
+            "parts": [
+              "Common",
+              "stable.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\deleted.pdf",
+            "parts": [
+              "deleted.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          }
+        ],
+        "read_errors": []
+      },
+      "after": {
+        "root": "C:\\Projects\\Example",
+        "review_mode": "full",
+        "files": [
+          {
+            "path": "C:\\Projects\\Example\\changed.txt",
+            "parts": [
+              "changed.txt"
+            ],
+            "size": 4,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "mtime_ns": 1700000000000000100
+          },
+          {
+            "path": "C:\\Projects\\Example\\added.pdf",
+            "parts": [
+              "added.pdf"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000000
+          },
+          {
+            "path": "C:\\Projects\\Example\\timestamp.txt",
+            "parts": [
+              "timestamp.txt"
+            ],
+            "size": 4,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mtime_ns": 1700000000000000100
+          }
+        ],
+        "read_errors": [
+          {
+            "path": "C:\\Projects\\Example\\Common",
+            "parts": [
+              "Common"
+            ],
+            "kind": "directory",
+            "errno": 13,
+            "winerror": null,
+            "message": "=Access denied"
+          }
+        ]
+      },
+      "expected_rows": [
+        {
+          "parts": [
+            "Common",
+            "stable.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\Common\\stable.pdf",
+          "FileName": "stable.pdf",
+          "Extension": "pdf",
+          "Status": "Unknown",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": null
+        },
+        {
+          "parts": [
+            "added.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\added.pdf",
+          "FileName": "added.pdf",
+          "Extension": "pdf",
+          "Status": "Added",
+          "Added": 1,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": null,
+          "SizeB": 4,
+          "SizeDelta": 4
+        },
+        {
+          "parts": [
+            "changed.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\changed.txt",
+          "FileName": "changed.txt",
+          "Extension": "txt",
+          "Status": "Changed",
+          "Added": null,
+          "Deleted": null,
+          "Changed": 1,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        },
+        {
+          "parts": [
+            "deleted.pdf"
+          ],
+          "FullPath": "C:\\Projects\\Example\\deleted.pdf",
+          "FileName": "deleted.pdf",
+          "Extension": "pdf",
+          "Status": "Deleted",
+          "Added": null,
+          "Deleted": 1,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": null,
+          "SizeDelta": -4
+        },
+        {
+          "parts": [
+            "timestamp.txt"
+          ],
+          "FullPath": "C:\\Projects\\Example\\timestamp.txt",
+          "FileName": "timestamp.txt",
+          "Extension": "txt",
+          "Status": "Unchanged",
+          "Added": null,
+          "Deleted": null,
+          "Changed": null,
+          "SizeA": 4,
+          "SizeB": 4,
+          "SizeDelta": 0
+        }
+      ],
+      "expected_workbook_sha256": {
+        "[Content_Types].xml": "5bc51505ac2e9ccbaf881beb49f630909fca7771867d59c6e5868c5075bb22cc",
+        "_rels/.rels": "1285b20099c64699001f9d90ea040ca1c177fa99bc3ae8a841128874820f01a4",
+        "xl/_rels/workbook.xml.rels": "835a5b8de8edc54cc25af7a5ac43bd6b8c3b30088a1121963b67d2d398b44830",
+        "xl/worksheets/sheet1.xml": "36031ac6079d021fa20e65392dfc5218cf339b83e5be12e025531487776d7de2",
+        "xl/worksheets/sheet2.xml": "a05a97eb639d868fcdc21ecc8d01abcf12d9219735f0086331943ff8c7bf5b26",
+        "xl/workbook.xml": "b69028f385f9e9bcece44f231e967c56052581af9d8b00e987de38f68f446cfe",
+        "xl/styles.xml": "66ad44dd5452dbcc64e085db1bb31cf6d7a9227be516384d7dfd52080b78f86c",
+        "xl/theme/theme1.xml": "75104b2164c20dab2578383d827deac3a7eec077c3f7c99a4099a551fdebb134",
+        "docProps/core.xml": "6e20ee649676f17654942233b4513eb34521ad36dda38a95f5f53f14aefe8d6b",
+        "docProps/app.xml": "350a424f17ac52e66406082377b19526762525327e04d5ddb4ebc3a8cbf6c872"
+      }
+    }
+  ]
+}

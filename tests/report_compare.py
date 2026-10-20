@@ -1,5 +1,6 @@
-"""Whole-report comparison; normalize access and generated timestamps only."""
+"""Compare the existing report view, explicitly projecting out the new state extension."""
 
+import re
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -36,14 +37,18 @@ def normalized_workbook(path):
         for row in status[1:]:
             if not row or row[0] is None:
                 break
-            status_values[row[0]] = row[1]
+            if not row[0].startswith("Comparison state "):
+                status_values[row[0]] = row[1]
         rows = sum(1 for _ in workbook["folder_review"].iter_rows(min_row=7))
     finally:
         workbook.close()
     result = {}
+    has_state = "_folder_review_state" in workbook.sheetnames
     with zipfile.ZipFile(path) as archive:
         assert archive.testzip() is None
         for name in archive.namelist():
+            if has_state and name == "xl/worksheets/sheet4.xml":
+                continue
             data = archive.read(name)
             if name in (
                 "xl/worksheets/sheet1.xml",
@@ -70,6 +75,74 @@ def normalized_workbook(path):
                             ):
                                 for value in cell:
                                     value.text = "VOLATILE"
+                data = ET.tostring(tree)
+            if name.endswith((".xml", ".rels")):
+                tree = ET.fromstring(data)
+                if has_state:
+                    if name == "xl/workbook.xml":
+                        sheets = tree.find("s:sheets", NS)
+                        for sheet in list(sheets):
+                            if sheet.get("name") == "_folder_review_state":
+                                sheets.remove(sheet)
+                    elif name == "xl/_rels/workbook.xml.rels":
+                        for relation in list(tree):
+                            if relation.get("Target") == "worksheets/sheet4.xml":
+                                tree.remove(relation)
+                        for relation in tree:
+                            number = int(relation.get("Id")[3:])
+                            if number > 4:
+                                relation.set("Id", f"rId{number - 1}")
+                    elif name == "[Content_Types].xml":
+                        for part in list(tree):
+                            if part.get("PartName") == "/xl/worksheets/sheet4.xml":
+                                tree.remove(part)
+                    elif name == "docProps/app.xml":
+                        for vector in tree.iter(
+                            "{http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes}vector"
+                        ):
+                            for part in list(vector):
+                                if part.text == "_folder_review_state":
+                                    vector.remove(part)
+                                    vector.set("size", str(len(vector)))
+                        for value in tree.iter(
+                            "{http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes}i4"
+                        ):
+                            if value.text == "4":
+                                value.text = "3"
+                    elif name == "xl/worksheets/sheet2.xml":
+                        sheet_data = tree.find("s:sheetData", NS)
+                        removed = []
+                        for row in list(sheet_data):
+                            texts = [
+                                element.text or ""
+                                for element in row.iter("{" + NS["s"] + "}t")
+                            ]
+                            if any(t.startswith("Comparison state ") for t in texts):
+                                removed.append(int(row.get("r")))
+                                sheet_data.remove(row)
+                        for row in sheet_data:
+                            number = int(row.get("r"))
+                            shift = sum(r < number for r in removed)
+                            row.set("r", str(number - shift))
+                            for cell in row.findall("s:c", NS):
+                                cell.set(
+                                    "r",
+                                    re.sub(
+                                        r"[0-9]+$", str(number - shift), cell.get("r")
+                                    ),
+                                )
+                        dimension = tree.find("s:dimension", NS)
+                        if dimension is not None and removed:
+                            dimension.set(
+                                "ref",
+                                re.sub(
+                                    r"[0-9]+$",
+                                    lambda m, removed=removed: str(
+                                        int(m[0]) - len(removed)
+                                    ),
+                                    dimension.get("ref"),
+                                ),
+                            )
                 data = ET.tostring(tree)
             result[name] = data
     return result, status_values, rows

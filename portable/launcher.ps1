@@ -1,6 +1,6 @@
 # Adapted from portable-python (MIT); attribution is retained in LICENSE.
 [CmdletBinding()]
-param([switch]$NoPause)
+param([switch]$NoPause, [ValidateSet('review','change')] [string]$Tool = 'review')
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version 2.0
@@ -239,7 +239,7 @@ function Confirm-ToolFiles {
         $path = Join-Path $Root $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'A tool file is missing. Extract a fresh ZIP.' }
         if ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Tool files must not be links.' }
-        if ((Get-Sha256 $path) -ne $entry.Value) { throw 'A tool file changed. Extract a fresh ZIP; edit only settings.ini.' }
+        if ((Get-Sha256 $path) -ne $entry.Value) { throw 'A tool file changed. Extract a fresh ZIP; edit only the two INI files.' }
     }
 }
 
@@ -320,7 +320,7 @@ try {
     $RuntimePython = Join-Path $RuntimeRoot ($PythonRequest + '\python.exe')
     Set-PortableEnvironment
     Set-Location -LiteralPath $Root
-    Write-Host 'FOLDER REVIEW'
+    Write-Host ('FOLDER ' + $(if ($Tool -eq 'change') { 'CHANGE REVIEW' } else { 'REVIEW' }))
     if (Test-Path -LiteralPath $ReadyMarker -PathType Leaf) {
         $ready = Get-Content -LiteralPath $ReadyMarker -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($ready.schema -ne 1 -or $ready.manifest_sha256 -ne (Get-Sha256 $ManifestPath)) { throw 'Prepared tool files changed. Extract a fresh ZIP.' }
@@ -367,11 +367,12 @@ try {
         Write-Host 'Setup: COMPLETE'
     }
     $Mode = 'review'
-    Write-PortableLog 'review' 'run_start' 'running' 'settings_ini'
+    Write-PortableLog 'review' 'run_start' 'running' 'ini_config'
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        & $VenvPython -u -E -s -B -X utf8 (Join-Path $SupportRoot 'run_review.py')
+        $entry = if ($Tool -eq 'change') { 'run_change_review.py' } else { 'run_review.py' }
+        & $VenvPython -u -E -s -B -X utf8 (Join-Path $SupportRoot $entry)
         $OverallExitCode = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previousPreference }
     Write-PortableLog 'review' 'run_finish' 'finished' ('exit_code=' + $OverallExitCode)

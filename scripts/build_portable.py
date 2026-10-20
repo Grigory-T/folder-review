@@ -17,8 +17,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def payload():
     paths = {
-        "SETUP.bat": ROOT / "SETUP.bat",
-        "settings.ini": ROOT / "settings.ini",
+        "folder-review.bat": ROOT / "folder-review.bat",
+        "folder-change-review.bat": ROOT / "folder-change-review.bat",
+        "folder-review.ini": ROOT / "folder-review.ini",
+        "folder-change-review.ini": ROOT / "folder-change-review.ini",
+        "support/folder_change_review.py": ROOT / "folder_change_review.py",
+        "support/review_state.py": ROOT / "review_state.py",
         "support/folder_review.py": ROOT / "folder_review.py",
         "support/LICENSE": ROOT / "LICENSE",
         "support/SECURITY.md": ROOT / "SECURITY.md",
@@ -28,6 +32,7 @@ def payload():
         "pins.json",
         "requirements.txt",
         "run_review.py",
+        "run_change_review.py",
         "runtime_check.py",
         "README.txt",
         "THIRD_PARTY.txt",
@@ -92,9 +97,15 @@ def build(output, release=False, source_commit=None):
         )
     contents = payload()
     settings = configparser.ConfigParser(interpolation=None)
-    settings.read_string(contents["settings.ini"].decode("utf-8-sig"))
+    settings.read_string(contents["folder-review.ini"].decode("utf-8-sig"))
     if settings["review"]["folder"].strip():
         raise ValueError("Release settings must leave the target folder blank")
+    comparison = configparser.ConfigParser(interpolation=None)
+    comparison.read_string(contents["folder-change-review.ini"].decode("utf-8-sig"))
+    if any(comparison["compare"][key].strip() for key in ("before", "after")):
+        raise ValueError(
+            "Release comparison settings must leave both input paths blank"
+        )
     manifest = {
         "format": 1,
         "version": project["version"],
@@ -103,7 +114,7 @@ def build(output, release=False, source_commit=None):
         "immutable_sha256": {
             n: hashlib.sha256(b).hexdigest()
             for n, b in contents.items()
-            if n != "settings.ini"
+            if not n.endswith(".ini")
         },
         "delivery": "Source-only Windows x86-64; fixed verified first-time setup; offline recurring scans",
     }

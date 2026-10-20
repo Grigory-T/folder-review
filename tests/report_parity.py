@@ -23,7 +23,7 @@ args.results.parent.mkdir(parents=True, exist_ok=True)
 tool = args.tool.resolve()
 python = tool / "support/state/venv/Scripts/python.exe"
 fixtures = Path(__file__).parent / "fixtures/windows"
-settings = tool / "settings.ini"
+settings = tool / "folder-review.ini"
 original = settings.read_bytes()
 results = []
 try:
@@ -165,7 +165,8 @@ raise SystemExit(core.main())
                     "case": name,
                     "exit_code": expected,
                     "rows": rows,
-                    "all_workbook_members_match": True,
+                    "all_legacy_workbook_members_match": True,
+                    "new_embedded_state_and_its_three_status_fields_excluded": True,
                 }
             )
         after = {

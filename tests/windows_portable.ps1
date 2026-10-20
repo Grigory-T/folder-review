@@ -26,7 +26,7 @@ $env:UV_PYTHON_INSTALL_DIR=$outside
 $records=New-Object Collections.Generic.List[object]
 
 function Set-Setting([string]$Name,[string]$Value,[switch]$Unicode) {
-    $path=Join-Path $root 'settings.ini'
+    $path=Join-Path $root 'folder-review.ini'
     $text=[IO.File]::ReadAllText($path)
     $evaluator=[Text.RegularExpressions.MatchEvaluator]{param($m) $Name+' = '+$Value}
     $text=[regex]::Replace($text,('(?m)^'+[regex]::Escape($Name)+'\s*=.*$'),$evaluator)
@@ -34,15 +34,17 @@ function Set-Setting([string]$Name,[string]$Value,[switch]$Unicode) {
     [IO.File]::WriteAllText($path,$text,$encoding)
 }
 
-function Invoke-Tool([string]$Case,[int]$Expected,[switch]$Batch) {
+function Invoke-Tool([string]$Case,[int]$Expected,[switch]$Batch,[switch]$Change) {
     $timer=[Diagnostics.Stopwatch]::StartNew()
     $old=$ErrorActionPreference
     try {
         $ErrorActionPreference='Continue'
         if($Batch) {
-            $lines=& cmd.exe /d /c ('call "'+(Join-Path $root 'SETUP.bat')+'" --no-pause') 2>&1
+            $entry=if($Change){'folder-change-review.bat'}else{'folder-review.bat'}
+            $lines=& cmd.exe /d /c ('call "'+(Join-Path $root $entry)+'" --no-pause') 2>&1
         } else {
-            $lines=& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'support\launcher.ps1') -NoPause 2>&1
+            $tool=if($Change){'change'}else{'review'}
+            $lines=& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'support\launcher.ps1') -NoPause -Tool $tool 2>&1
         }
         $code=$LASTEXITCODE
     } finally { $ErrorActionPreference=$old; $timer.Stop() }
@@ -59,6 +61,43 @@ Invoke-Tool 'fresh-setup-and-scan' 0
 if($lastOutput -notmatch 'Setup: COMPLETE' -or $lastOutput -notmatch 'Scan status: COMPLETE') { throw 'Fresh preparation did not run' }
 $report=Join-Path $root 'folder-review.xlsx'
 if(-not(Test-Path -LiteralPath $report)) { throw 'Report not beside the launcher' }
+# The inventory owns capture; the second entry point consumes those exact XLSX files.
+$project=Join-Path $base 'change-input'
+New-Item -ItemType Directory -Path $project | Out-Null
+foreach($name in @('stable.txt','changed.txt','deleted.txt')) { [IO.File]::WriteAllText((Join-Path $project $name),'original',$utf8) }
+Set-Setting 'folder' $project
+Set-Setting 'duplicates' 'off'
+Invoke-Tool 'capture-before-state' 0 -Batch
+$stateA=Join-Path $base 'before.xlsx'
+Copy-Item -LiteralPath $report -Destination $stateA
+[IO.File]::WriteAllText((Join-Path $project 'changed.txt'),'changed and larger',$utf8)
+Remove-Item -LiteralPath (Join-Path $project 'deleted.txt')
+[IO.File]::WriteAllText((Join-Path $project 'added.txt'),'new',$utf8)
+Invoke-Tool 'capture-after-state' 0 -Batch
+$stateB=Join-Path $base 'after.xlsx'
+Copy-Item -LiteralPath $report -Destination $stateB
+$stateHashes=@((Get-FileHash $stateA).Hash,(Get-FileHash $stateB).Hash)
+$comparisonConfig="[compare]`nbefore = `"$stateA`"`nafter = `"$stateB`"`ndiagnostics = yes`n"
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),$comparisonConfig,[Text.Encoding]::Unicode)
+Invoke-Tool 'compare-xlsx-states-actual-batch' 0 -Batch -Change
+foreach($category in @('Added','Deleted','Changed','Unchanged')) {
+    if($lastOutput -notmatch ($category+': 1')) { throw 'Comparison did not preserve the expected change classifications' }
+}
+$comparisonReport=Join-Path $root 'folder-change-review.xlsx'
+$comparisonHash=(Get-FileHash $comparisonReport).Hash
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),"[compare]`nbefore = invalid`nafter = invalid`n",$utf8)
+Invoke-Tool 'bad-comparison-config-preserves-report' 1 -Change
+if((Get-FileHash $comparisonReport).Hash -ne $comparisonHash){throw 'Invalid comparison replaced its report'}
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),$comparisonConfig,$utf8)
+$oldRoot=$root
+$root=Join-Path $base 'comparison-first'
+New-Item -ItemType Directory -Path $root | Out-Null
+Expand-Archive -LiteralPath $Zip -DestinationPath $root
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),$comparisonConfig,$utf8)
+Invoke-Tool 'comparison-first-entry-prepares-shared-runtime' 0 -Batch -Change
+$root=$oldRoot
+if((Get-FileHash $stateA).Hash -ne $stateHashes[0] -or (Get-FileHash $stateB).Hash -ne $stateHashes[1]){throw 'Comparison modified input states'}
+Set-Setting 'folder' $inputDir
 $ready=Join-Path $root 'support\state\ready.state'
 $readyBytes=[Convert]::ToBase64String([IO.File]::ReadAllBytes($ready))
 $readyTime=(Get-Item -LiteralPath $ready).LastWriteTimeUtc.Ticks
@@ -77,6 +116,7 @@ try {
         if($lastOutput -notmatch 'Setup: SKIPPED' -or $lastOutput -match 'Download:|First-time setup') { throw 'Recurring scan performed preparation' }
     }
     Invoke-Tool 'actual-batch-wrapper' 0 -Batch
+    Invoke-Tool 'offline-comparison-without-uv' 0 -Batch -Change
 } finally { Move-Item -LiteralPath $uvSaved -Destination $uv }
 if([Convert]::ToBase64String([IO.File]::ReadAllBytes($ready)) -ne $readyBytes -or (Get-Item -LiteralPath $ready).LastWriteTimeUtc.Ticks -ne $readyTime) { throw 'Unchanged starts rewrote readiness' }
 Set-Setting 'workers' '0'
@@ -85,7 +125,7 @@ Invoke-Tool 'invalid-settings-preserve-report' 1
 if((Get-FileHash -LiteralPath $report).Hash -ne $reportBefore) { throw 'Invalid settings replaced the last report' }
 Set-Setting 'workers' 'auto'
 $stream=[IO.File]::Open((Join-Path $root 'support\state\workspace.lock'),'OpenOrCreate','ReadWrite','None')
-try { Invoke-Tool 'concurrent-workspace-rejected' 10 } finally { $stream.Dispose() }
+try { Invoke-Tool 'concurrent-workspace-rejected' 10; Invoke-Tool 'comparison-shares-workspace-lock' 10 -Change } finally { $stream.Dispose() }
 $core=Join-Path $root 'support\folder_review.py'
 $original=[IO.File]::ReadAllBytes($core)
 [IO.File]::AppendAllText($core,"`n# changed",$utf8)
@@ -136,6 +176,8 @@ $receipt=[ordered]@{
     neutral_setup_journal=$true
     fixed_source_integrity_checked=$true
     smb_input_checked=$smbAvailable
+    xlsx_comparison_input_bytes_unchanged=$true
+    shared_runtime_both_entry_points=$true
     cases=$records.ToArray()
 }
 if($Results) { [IO.File]::WriteAllText($Results,($receipt|ConvertTo-Json -Depth 6),$utf8) }

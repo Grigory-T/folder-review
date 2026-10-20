@@ -13,7 +13,7 @@ if not exist "%~dp0support\launcher.ps1" (
 "%POWERSHELL_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0support\launcher.ps1" -NoPause
 set "REVIEW_EXIT=%ERRORLEVEL%"
 echo.
-if "%REVIEW_EXIT%"=="0" echo COMPLETE - report created beside SETUP.bat.
+if "%REVIEW_EXIT%"=="0" echo COMPLETE - report created beside folder-review.bat.
 if "%REVIEW_EXIT%"=="2" echo PARTIAL - report created; review scan_status.
 if not "%REVIEW_EXIT%"=="0" if not "%REVIEW_EXIT%"=="2" echo FAILED - read the error above.
 if /i "%~1"=="--no-pause" exit /b %REVIEW_EXIT%

@@ -19,7 +19,7 @@ class SettingsTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.path = self.root / "settings.ini"
+        self.path = self.root / "folder-review.ini"
         self.location = mock.patch.object(
             core, "application_directory", return_value=self.root
         )
@@ -132,7 +132,7 @@ class SettingsTests(unittest.TestCase):
         try:
             rows = list(book["folder_review"].iter_rows(min_row=6, values_only=True))
             names = [r[rows[0].index("File name")] for r in rows[1:]]
-            self.assertEqual(set(names), {"leaf.txt", "settings.ini"})
+            self.assertEqual(set(names), {"leaf.txt", "folder-review.ini"})
         finally:
             book.close()
 

@@ -44,13 +44,13 @@ The ready marker and version/core checks are not a full installed-file tamper au
 
 Run the complete tool on a writable local fixed drive, not a share, junction or
 symlink. All state, caches, downloads, setup journal, scan logs and workspaces stay
-under support/state beside SETUP.bat. There is no AppData/system-temp fallback.
-Immutable tool-file hashes are checked on launch; only settings.ini is editable.
+under support/state beside folder-review.bat. There is no AppData/system-temp fallback.
+Immutable tool-file hashes are checked on launch; only folder-review.ini and folder-change-review.ini are editable.
 A workspace lock prevents concurrent setup/scans in the same folder. A moved
 folder rebuilds its venv from retained local cache offline; incomplete cache fails
 instead of silently going online. Settings and existing reports are preserved.
 
-Reports stay beside SETUP.bat and are atomically replaced after a successful close.
+Reports stay beside folder-review.bat and are atomically replaced after a successful close.
 Only the selected report, its exact random staging file and owned support state
 are permitted writes when the tool is inside input; runtime/support/report are
 excluded from that scan. Other input mutations/commands are rejected by Python
@@ -82,3 +82,19 @@ Windows 11 x64 is tested; Windows 10 is unverified. Source is auditable; no sign
 publisher or malware-free guarantee is claimed. Report a concern privately through
 GitHub Security advisories if available, or supply a synthetic reproduction in an
 issue. Do not publish real reports, file lists, usernames, hosts or credentials.
+
+## Saved-state comparison
+
+Comparison reads only the two explicitly selected XLSX files (local or SMB),
+never the recorded project roots or workbook external links. It parses only
+required OOXML parts and literal state cells; no formulas/macros are executed.
+The versioned state uses checksummed compressed JSON/base64, not pickle or code.
+Package/XML/compressed/decoded limits and strict record/coverage validation reject
+unsupported, corrupt, ambiguous or oversized states. Checksums detect accidental
+changes; they are not signatures against a party able to replace the whole file.
+The same offline, local-workspace, atomic-output and read-only guards apply.
+Comparison output cannot overwrite either input, including known filesystem aliases.
+The two INI files are the only editable packaged inputs. Both entry points share
+the exclusive workspace lock and exact pinned runtime. No GUI, EXE, alternate
+capture engine or user machine history search is included. Historical states must
+be kept outside a scanned project if renamed/copied into arbitrary XLSX filenames.
