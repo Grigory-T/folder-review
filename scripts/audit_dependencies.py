@@ -9,13 +9,15 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--components", type=Path, default=Path("dist/components.json"))
+    parser.add_argument("--pins", type=Path, default=Path("portable/pins.json"))
     parser.add_argument(
         "--output", type=Path, default=Path("dist/dependency-audit.json")
     )
     args = parser.parse_args()
-    inventory = json.loads(args.components.read_text())
-    packages = inventory["components"]
+    pins = json.loads(args.pins.read_text())
+    packages = [
+        {"name": name, "version": version} for name, version in pins["packages"].items()
+    ]
     queries = [
         {"package": {"name": p["name"], "ecosystem": "PyPI"}, "version": p["version"]}
         for p in packages
@@ -41,7 +43,7 @@ def main():
     report = {
         "checked_at_utc": datetime.datetime.now(datetime.UTC).isoformat(),
         "service": service,
-        "executable_sha256": inventory["executable_sha256"],
+        "runtime": "Frozen CPython 3.13.16 Windows package set",
         "packages": records,
         "advisories_found": sum(len(p["advisory_ids"]) for p in records),
         "limits": "Known Python-package advisories only; excludes native/OS libraries and unknown vulnerabilities. Not a malware guarantee.",

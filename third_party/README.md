@@ -1,3 +1,10 @@
+# Historical bundled-delivery records
+
+These license/source records describe the prebundled v0.18.0 delivery retained at
+that Git tag and release. Current source-only delivery downloads the fixed upstream
+components on first setup; see [current notices](../portable/THIRD_PARTY.txt).
+The installed components retain their licenses. No PyInstaller or GUI is maintained.
+
 # Third-party materials
 
 Folder Review's own code is MIT licensed. Dependencies retain their own licenses.

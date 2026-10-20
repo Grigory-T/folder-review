@@ -1,69 +1,84 @@
 # Security and audit notes
 
-Folder Review processes files locally. It has no updater, telemetry, account,
-web service, or automatic runtime installation. Its permanent Python audit hook
-rejects sockets/DNS, HTTP requests, browser launching and remote registry calls,
-including before and after a scan. SMB uses operating-system file I/O.
+Folder Review has two explicit phases. First-time setup uses Internet access to
+fetch fixed reviewed components. Subsequent unchanged starts perform local checks
+and run the scanner offline; they do not invoke uv, resolve dependencies, install
+packages or poll GitHub. There is no updater or telemetry. Python networking is
+permanently disabled by the scanner before importing its third-party libraries.
+SMB input uses operating-system file I/O rather than Python sockets.
 
-Use local storage or SMB UNC/mapped paths for input. Reports stay beside the program. URLs, known
-Windows WebDAV paths (including mapped drives), and non-SMB Linux network mounts
-are rejected. Run the application itself from a writable local folder.
-The standard PyInstaller folder build loads its runtime from `_internal` beside
-the EXE; it does not self-extract into AppData or OS temp. Application-owned logs
-and per-run processing workspaces stay in `folder-review-data` beside the program,
-independently of working directory, TEMP/TMP or profile paths. No external fallback
-is used. Python source uses the same layout beside folder_review.py.
+## Setup trust and downloads
 
-The scanner does not edit, delete, rename, chmod or execute inspected files.
-During a review, an audit guard rejects Python mutations of the selected tree,
-including through known link/mapped/UNC aliases. Write exceptions are the
-report beside the application, its exact random atomic-save staging file, and the
-application-owned folder-review-data subtree. Runtime/support directories and the
-selected report are excluded when the tool folder is within input. Selecting a
-support/runtime folder itself as input is rejected. The
-report is excluded from scans and replaced only after a successful workbook close.
-Existing output is intentionally replaced; all other target files remain read-only.
-Links are listed without traversing their targets. Temporary processing files
-are cleaned on normal completion/failure; a crash can leave local temporary files.
+The source-only ZIP contains the batch/PowerShell launcher, shared scanner,
+settings template, fixed hashes/requirements and notices. Verify its release
+checksum and review sources when authenticity matters. The local reviewed
+launcher and manifest are trusted inputs; they are not independent signatures
+or protection against a local attacker who can replace them together.
 
-Neutral performance logs stay in folder-review-data/logs beside the program. They contain only
-tool-owned categories, aggregate counts/timings and byte totals, with no input
-names/paths/content/fingerprints, host/account identifiers or exception messages.
-The log path is displayed in progress, not written inside the log. Logs are not
-uploaded. Creation is exclusive; a log never replaces an existing file. Logging
-can be disabled with --no-log. Diagnostic heartbeats do not interrupt OS I/O or
-change operating-system SMB timeouts.
+The bootstrap is adapted from portable-python's MIT application launcher. It
+uses TLS verification, Windows certificate trust and approved official sources.
+uv archive/executable hashes are pinned before execution. CPython selection is
+fixed in the pinned uv catalog, which verifies the downloaded distribution;
+CPython's executable/core DLL hashes are independently checked. Version selectors
+are not user settings. Requirements include exact versions/artifact hashes, and
+uv installs wheels only with --require-hashes and --no-deps from official PyPI.
+Inherited UV_* index/mirror/environment overrides are cleared. Proxy settings
+remain supported; TLS verification is never disabled. No origin credentials are
+embedded or saved. PowerShell/BITS bootstrap can use the current proxy's Windows
+credentials; uv's own client does not guarantee PAC/Negotiate compatibility.
 
-These are application protections, not an OS sandbox. OS access-time updates,
-cloud hydration, antivirus, filesystem redirectors and a compromised host are
-outside their control. Saving a report changes its parent directory timestamp.
-A concurrently modified tree is not a consistent filesystem snapshot. Archive
-budgets are bounded, but time limits are cooperative, not process-level deadlines.
-For hostile data or strict enforcement, use a read-only share/account or an
-isolated machine with outbound network policy allowing only the required SMB.
+The official 7-Zip installer and setup-only 7zr.exe decoder have pinned release
+hashes. The decoder extracts only 7z.exe, 7z.dll and License.txt into local state;
+each output is independently verified. The installer is not run. Scan-time RAR
+inspection uses the same 64-bit backend as previous releases. Standard Windows
+x64 WoW64 is needed for the x86 setup decoder. No global Python/uv/7-Zip, registry
+registration or administrator install is used.
 
-# Components, provenance and verification
+Wheels and downloaded interpreters retain their own code-execution capabilities
+and licenses. Hashes establish identity, not that upstream code is harmless.
+The runtime/package set is fixed rather than guaranteed vulnerability-free forever.
+Use a new reviewed release/fresh extraction for upgrades; do not mix prepared state.
+The ready marker and version/core checks are not a full installed-file tamper audit.
 
-Runtime dependencies are version/hash locked in uv.lock; build tools are locked
-in windows_build/requirements-build.txt. The exact Windows CPython archive and
-7-Zip files are hash-pinned separately. Every file in the installed Python runtime
-is checked against that archive. Code files in installed wheels are checked
-against RECORD, and all bundled native payloads must match a runtime-archive,
-wheel, or pinned 7-Zip origin. An unknown native payload stops release preparation.
+## Local state and protected input
 
-components.json records versions, roles, native origins and hashes. The build
-manifest records source, inputs, component/source bundles and EXE identity.
-Source/frozen tests, complete workbook parity and a fresh-directory byte-identical
-rebuild must pass before dist/ is published. See windows_build/README.md.
+Run the complete tool on a writable local fixed drive, not a share, junction or
+symlink. All state, caches, downloads, setup journal, scan logs and workspaces stay
+under support/state beside SETUP.bat. There is no AppData/system-temp fallback.
+Immutable tool-file hashes are checked on launch; only settings.ini is editable.
+A workspace lock prevents concurrent setup/scans in the same folder. A moved
+folder rebuilds its venv from retained local cache offline; incomplete cache fails
+instead of silently going online. Settings and existing reports are preserved.
 
-A release security-verification.json records the date, known-vulnerability check
-and local antivirus result/availability. These checks can miss unknown flaws and
-malicious upstream code. Hashes prove identity, not that code is harmless.
-The EXE is unsigned; no verified publisher or malware-free guarantee is claimed.
-Windows 11 is tested; Windows 10 remains unverified.
+Reports stay beside SETUP.bat and are atomically replaced after a successful close.
+Only the selected report, its exact random staging file and owned support state
+are permitted writes when the tool is inside input; runtime/support/report are
+excluded from that scan. Other input mutations/commands are rejected by Python
+audit guards, including known mapped/UNC/link aliases. Links are listed without
+following targets. Selecting support itself as input is rejected before creating
+scan work. Runtime archive commands are allowlisted read-only operations.
 
-# Reporting a concern
+Input may be local or SMB. URLs, known WebDAV paths and known non-SMB Linux network
+filesystems are rejected. Source/developer APIs use the same scanner and guards.
+Normal package settings cannot redirect report/logs/runtime elsewhere.
 
-Use the repository Security advisory reporting feature if available, or open an
-issue containing a minimal synthetic reproduction. Do not post real file lists,
-reports, paths, credentials or other private data in a public issue.
+## Privacy, limitations and reporting
+
+Neutral scan logs record aggregate timings/counts/bytes, not input names, paths,
+contents, hashes, machine/account identifiers or exception text. The setup journal
+records fixed categories and exit/status codes, never command output or exception
+messages. App console output and the report deliberately preserve original paths
+and names: keep them private. Generated venv/runtime metadata can contain its own
+local installation paths; it stays inside the tool folder and is not published.
+
+These are application protections, not an OS sandbox. Windows/antivirus/Explorer
+can maintain their own state. Access-time updates, cloud hydration, filesystem
+redirectors and a compromised host are outside the tool's control. Concurrently
+modified input is not a consistent snapshot. Archive time limits are cooperative.
+For strict enforcement, use read-only SMB/filesystem permissions and appropriate
+OS outbound policy. Never disable endpoint protections to run the tool.
+
+Windows 11 x64 is tested; Windows 10 is unverified. Source is auditable; no signed
+publisher or malware-free guarantee is claimed. Report a concern privately through
+GitHub Security advisories if available, or supply a synthetic reproduction in an
+issue. Do not publish real reports, file lists, usernames, hosts or credentials.

@@ -1,21 +1,22 @@
 @echo off
-setlocal
-cd /d "%~dp0" || exit /b 1
-set "UV_EXE="
-if exist "%~dp0uv.exe" set "UV_EXE=%~dp0uv.exe"
-if not defined UV_EXE for /f "delims=" %%I in ('where uv.exe 2^>nul') do if not defined UV_EXE set "UV_EXE=%%I"
-if not defined UV_EXE if exist "%USERPROFILE%\.local\bin\uv.exe" set "UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
-if not defined UV_EXE (
-    echo ERROR: Install uv before preparing the Python version.
-    exit /b 1
+setlocal EnableExtensions DisableDelayedExpansion
+cd /d "%~dp0" || exit /b 30
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%POWERSHELL_EXE%" (
+    echo ERROR: Windows PowerShell was not found.
+    exit /b 30
 )
-rem Keep setup downloads, caches and interpreter beside this Python delivery.
-set "UV_CACHE_DIR=%~dp0folder-review-data\setup\cache"
-set "UV_PYTHON_INSTALL_DIR=%~dp0folder-review-data\setup\python"
-set "UV_PYTHON_BIN_DIR=%~dp0folder-review-data\setup\bin"
-set "TEMP=%~dp0folder-review-data\setup\temp"
-set "TMP=%TEMP%"
-if not exist "%TEMP%" mkdir "%TEMP%" || exit /b 1
-echo Preparing the local environment. This setup step may access the Internet.
-"%UV_EXE%" sync --frozen --no-dev --python 3.13.16
-exit /b %ERRORLEVEL%
+if not exist "%~dp0support\launcher.ps1" (
+    echo ERROR: Extract the complete folder-review ZIP before starting.
+    exit /b 30
+)
+"%POWERSHELL_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0support\launcher.ps1" -NoPause
+set "REVIEW_EXIT=%ERRORLEVEL%"
+echo.
+if "%REVIEW_EXIT%"=="0" echo COMPLETE - report created beside SETUP.bat.
+if "%REVIEW_EXIT%"=="2" echo PARTIAL - report created; review scan_status.
+if not "%REVIEW_EXIT%"=="0" if not "%REVIEW_EXIT%"=="2" echo FAILED - read the error above.
+if /i "%~1"=="--no-pause" exit /b %REVIEW_EXIT%
+echo Press any key to close this window.
+pause >nul
+exit /b %REVIEW_EXIT%

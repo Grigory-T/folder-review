@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import errno
 import json
+import math
 import ntpath
 import os
 import re
@@ -32,7 +34,7 @@ sys.dont_write_bytecode = True
 
 
 def offline_audit(event: str, arguments: tuple) -> None:
-    """Keep Python networking disabled, including startup and idle GUI time."""
+    """Keep Python networking disabled before, during and after each scan."""
     if event.startswith("socket.") or event in {
         "urllib.Request",
         "http.client.connect",
@@ -61,7 +63,7 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 OUTPUT_FILE = "folder-review.xlsx"
 
 # Increment with the release version; included in neutral diagnostic logs.
-TOOL_VERSION = "0.18.0"
+TOOL_VERSION = "0.19.0"
 
 
 class PerformanceLog:
@@ -700,8 +702,32 @@ def path_within(path: str | os.PathLike[str], root: str) -> bool:
         candidate = parent
 
 
+_delivery_root: Path | None = None
+_support_root: Path | None = None
+
+
+def configure_portable_layout(root: Path, support: Path) -> None:
+    """The reviewed launcher supplies locations; settings cannot redirect state."""
+    global _delivery_root, _support_root
+    if _protected_root is not None:
+        raise RuntimeError("Cannot change layout during a review.")
+    root, support = root.resolve(), support.resolve()
+    if support.parent != root or not local_storage(root):
+        raise ValueError("Use the complete tool in a local folder.")
+    _delivery_root, _support_root = root, support
+
+
+def support_directories() -> list[Path]:
+    directories = [_support_root or application_directory() / "folder-review-data"]
+    if getattr(sys, "frozen", False):
+        directories.append(Path(sys._MEIPASS))
+    return directories
+
+
 def application_directory() -> Path:
     """Actual delivery location, independent of working directory and profiles."""
+    if _delivery_root is not None:
+        return _delivery_root
     return Path(
         resolved_path(sys.executable if getattr(sys, "frozen", False) else __file__)
     ).parent
@@ -709,7 +735,11 @@ def application_directory() -> Path:
 
 def portable_directory() -> Path:
     """Reserve one local, non-linked support folder beside the application."""
-    directory = application_directory() / "folder-review-data"
+    directory = (
+        (_support_root / "state")
+        if _support_root
+        else application_directory() / "folder-review-data"
+    )
     if not local_storage(directory):
         raise ValueError("Copy the tool to a writable local folder before running it.")
     try:
@@ -894,7 +924,7 @@ def runtime_audit(event: str, arguments: tuple) -> None:
         if not local_storage(value):
             raise PermissionError("Working-file writes must stay on local storage.")
         raise PermissionError(
-            "Working files must stay beside the application in folder-review-data."
+            "Working files must stay in the application support folder."
         )
 
     if event == "open":
@@ -970,8 +1000,12 @@ def runtime_audit(event: str, arguments: tuple) -> None:
             raise FileNotFoundError(
                 errno.ENOENT, "The archive backend is unavailable.", command[0]
             )
+        trusted_backend = _support_root is not None and resolved_path(
+            executable
+        ) == resolved_path(_support_root / "state/backend/7z.exe")
         if path_within(executable, root) and not (
-            getattr(sys, "frozen", False) and path_within(executable, sys._MEIPASS)
+            trusted_backend
+            or (getattr(sys, "frozen", False) and path_within(executable, sys._MEIPASS))
         ):
             raise PermissionError(
                 "The inspected folder is read-only; its programs cannot be executed."
@@ -1004,13 +1038,11 @@ def safe_runtime(root: str, output: Path):
     validate_output_path(output, root)
     if getattr(sys, "frozen", False) and not local_storage(sys._MEIPASS):
         raise ValueError("The application runtime must use local storage.")
-    support = portable_directory()
-    if path_within(root, str(support)) or (
-        getattr(sys, "frozen", False) and path_within(root, sys._MEIPASS)
-    ):
+    if any(path_within(root, str(directory)) for directory in support_directories()):
         raise ValueError(
             "Select data to inspect, not the application's support folder."
         )
+    support = portable_directory()
     previous_tempdir = tempfile.tempdir
     _portable_data_root = str(support)
     _protected_root = root
@@ -4148,7 +4180,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--cli",
         action="store_true",
-        help="Use terminal prompts instead of the desktop window",
+        help="Use the terminal folder prompt (normally edit settings.ini)",
     )
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
     parser.add_argument(
@@ -4158,7 +4190,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     diagnostics = parser.add_mutually_exclusive_group()
     diagnostics.add_argument(
         "--log",
-        help="New JSONL file in folder-review-data/logs beside the application (must not exist)",
+        help="New JSONL file in the application logs folder (must not exist)",
     )
     diagnostics.add_argument(
         "--no-log", action="store_true", help="Disable the neutral performance log"
@@ -4292,7 +4324,7 @@ def performance_log(args, root: str, progress=None):
             path = Path(absolute_path(pasted_path(args.log)))
             if resolved_path(path.parent) != resolved_path(directory):
                 raise ValueError(
-                    "Diagnostic logs must be in folder-review-data/logs beside the application."
+                    "Diagnostic logs must stay in the application logs folder."
                 )
         else:
             path = directory / f"folder-review-{os.urandom(12).hex()}.jsonl"
@@ -4381,10 +4413,7 @@ def report_exclusions(output: Path, root: str) -> set[str]:
 def scan_exclusions(output: Path, root: str) -> set[str]:
     """Skip changing tool-owned subtrees, including mapped aliases, once per scan."""
     excluded = report_exclusions(output, root)
-    directories = [application_directory() / "folder-review-data"]
-    if getattr(sys, "frozen", False):
-        directories.append(Path(sys._MEIPASS))
-    for directory in directories:
+    for directory in support_directories():
         excluded.update(report_exclusions(directory, root))
     return excluded
 
@@ -4518,6 +4547,67 @@ def show_licenses() -> None:
             print(path.read_text(encoding="utf-8", errors="replace"))
 
 
+def run_settings(path: Path, progress=None) -> int:
+    """Read literal Notepad settings; no interpolation, shell or code evaluation."""
+    data = path.read_bytes()
+    encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(data.decode(encoding))
+    except (UnicodeError, configparser.Error) as exc:
+        raise ValueError(
+            "Cannot read settings.ini. Save a valid INI file as UTF-8 or UTF-16 with BOM."
+        ) from exc
+    allowed = {
+        "folder",
+        "report",
+        "duplicates",
+        "workers",
+        "full_metadata",
+        "diagnostics",
+        "max_expanded_gib",
+        "max_archive_seconds",
+        "max_rows",
+    }
+    if parser.sections() != ["review"] or parser.defaults():
+        raise ValueError(
+            "settings.ini must have exactly one [review] section and no DEFAULT settings."
+        )
+    settings = parser["review"]
+    if set(settings) - allowed:
+        raise ValueError(
+            "Unknown setting in settings.ini. Use the supplied setting names."
+        )
+    root = pasted_path(settings.get("folder", ""))
+    if not root:
+        raise ValueError(
+            "Edit folder in settings.ini with Notepad, save the file, then run SETUP.bat again."
+        )
+    args = parse_args([])
+    args.workers = worker_count(settings.get("workers", "auto"))
+    args.duplicates = settings.get("duplicates", "filtered").strip().lower()
+    if args.duplicates not in {"off", "filtered", "all"}:
+        raise ValueError("duplicates must be off, filtered, or all.")
+    args.full_metadata = settings.getboolean("full_metadata", False)
+    args.no_log = not settings.getboolean("diagnostics", True)
+    for key in ("max_expanded_gib", "max_archive_seconds"):
+        if key in settings:
+            value = non_negative_float(settings[key])
+            if not math.isfinite(value):
+                raise ValueError("Archive limits must be finite non-negative numbers.")
+            setattr(args, key, value)
+    args.max_rows = row_limit(settings.get("max_rows", str(EXCEL_MAX_DATA_ROWS)))
+    name = settings.get("report", OUTPUT_FILE).strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or any(c in name for c in "/\\:")
+        or Path(name).suffix.lower() != ".xlsx"
+    ):
+        raise ValueError("report must be an .xlsx filename, without a folder path.")
+    return execute_review(args, root, application_directory() / name, progress)
+
+
 def main() -> int:
     try:
         validate_platform()
@@ -4528,12 +4618,8 @@ def main() -> int:
                 raise ValueError("Use --licenses on its own.")
             show_licenses()
             return 0
-        if not sys.argv[1:] or sys.argv[1:] == ["--gui"]:
-            from folder_review_ui import launch
-
-            return launch()
-        if "--gui" in sys.argv[1:]:
-            raise ValueError("Use --gui on its own; choose options in the window.")
+        if not sys.argv[1:]:
+            return run_settings(application_directory() / "settings.ini")
         return run()
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

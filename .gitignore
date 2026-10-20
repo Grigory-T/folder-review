@@ -11,3 +11,4 @@ folder-review.xlsx
 .build-venv/
 dist/
 folder-review-data/
+portable/state/

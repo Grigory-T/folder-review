@@ -1,0 +1,20 @@
+Folder Review source and adapted portable-python launcher are MIT licensed.
+Attributions are retained in LICENSE. The source-only ZIP includes no downloaded
+executables, CPython archive, installed packages, or prebuilt virtual environment.
+
+Setup downloads directly from reviewed official sources using the fixed pins in
+pins.json and the SHA-256 hashes in requirements.txt. Downloaded components retain
+their own licenses, included with the interpreter, wheels and archive backend.
+
+uv 0.13.1: Apache-2.0 OR MIT, https://github.com/astral-sh/uv
+CPython 3.13.16: PSF and bundled-library terms, https://docs.python.org/3.13/license.html
+python-build-standalone: https://github.com/astral-sh/python-build-standalone
+7-Zip 26.04: pinned 7zr.exe (x86, setup-only), then 7z.exe/7z.dll (x64).
+Standard Windows x64 WoW64 is needed during setup. LGPL/BSD/unRAR terms, https://www.7-zip.org/license.txt
+7-Zip corresponding source: https://github.com/ip7z/7zip/releases/download/26.04/7z2604-src.tar.xz
+Python package metadata/licenses: installed dist-info directories under state/venv.
+7-Zip license: state/backend/License.txt. Interpreter notices: state/python/.
+
+Redistributing a prepared runtime is separate from sharing this source-only ZIP:
+retain all licenses and satisfy applicable corresponding-source obligations.
+The repository's third_party/ contains the prior dependency source/license records.
