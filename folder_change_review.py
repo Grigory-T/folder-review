@@ -524,7 +524,7 @@ def write_report(
 
 def compare_files(before_path, after_path, output, progress=None, diagnostics=True):
     """Compare saved workbooks offline; the recorded project paths stay lexical."""
-    from review_state import load_snapshot
+    from review_state import load_snapshot, path_module
 
     emit = progress or print
     output = Path(core.absolute_path(output))
@@ -557,6 +557,19 @@ def compare_files(before_path, after_path, output, progress=None, diagnostics=Tr
         if log is not None:
             log.set_phase("state_load")
         before, after = [load_snapshot(path) for path in inputs]
+        # The selected state workbooks are tool artifacts, including manually
+        # renamed copies inside the project. This is lexical: never probe roots.
+        for snapshot in (before, after):
+            module = path_module(snapshot["root"])
+            for path in inputs:
+                try:
+                    relative = module.relpath(path, snapshot["root"])
+                except ValueError:
+                    continue
+                if relative not in (".", "..") and not relative.startswith(
+                    ".." + module.sep
+                ):
+                    snapshot["excluded_tool_paths"].append(relative)
         if log is not None:
             log.set_phase("comparison")
         rows = compare_snapshots(before, after)

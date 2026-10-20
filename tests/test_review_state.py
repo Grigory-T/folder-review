@@ -389,3 +389,14 @@ class WorkbookStateTests(unittest.TestCase):
             with self.subTest(index=index), self.assertRaises(ValueError):
                 self.compare(bad, original)
             self.assertEqual(self.output.read_bytes(), b"previous")
+
+    def test_selected_state_copies_inside_project_do_not_become_false_additions(self):
+        self.root = self.tool
+        file = self.root / "business.txt"
+        file.write_bytes(b"before")
+        _, report, _ = self.capture()
+        before = self.tool / "saved-before.xlsx"
+        before.write_bytes(report.read_bytes())
+        file.write_bytes(b"changed size")
+        _, after, _ = self.capture()
+        self.assertEqual(self.compare(before, after), {"Changed": 1})

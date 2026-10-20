@@ -96,8 +96,9 @@ ZIP/RAR/7z are opaque physical files in comparison, even while the visible
 inventory expands them. Empty-folder/virtual rows and links do not become files.
 Temporary files (`~*`, Thumbs.db, *.tmp, *.temp), .states, *.fcrstate and reserved
 old comparison artifacts are excluded. Recorded tool-support/output exclusions
-apply to both states. Keep manually renamed/copied historical workbooks outside
-the inspected project so those copies do not appear as project files.
+apply to both states. The two selected state workbooks are also omitted at matching recorded paths,
+including renamed copies. Keep other manually renamed/copied historical workbooks
+outside the inspected project so those extra copies do not appear as project files.
 
 | State mode | Same-path change detection | Additional state reads |
 |---|---|---:|
