@@ -43,9 +43,9 @@ The ready marker and version/core checks are not a full installed-file tamper au
 ## Local state and protected input
 
 Run the complete tool on a writable local fixed drive, not a share, junction or
-symlink. All state, caches, downloads, setup journal, scan logs and workspaces stay
+symlink. All state, caches, downloads, optional setup journal/scan logs and workspaces stay
 under support/state beside folder-review.bat. There is no AppData/system-temp fallback.
-Immutable tool-file hashes are checked on launch; only folder-review.ini and folder-change-review.ini are editable.
+Immutable tool-file hashes are checked on launch; only folder-review.txt and folder-change-review.txt are editable.
 A workspace lock prevents concurrent setup/scans in the same folder. A moved
 folder rebuilds its venv from retained local cache offline; incomplete cache fails
 instead of silently going online. Settings and existing reports are preserved.
@@ -65,7 +65,7 @@ Normal package settings cannot redirect report/logs/runtime elsewhere.
 ## Privacy, limitations and reporting
 
 Neutral scan logs record aggregate timings/counts/bytes, not input names, paths,
-contents, hashes, machine/account identifiers or exception text. The setup journal
+contents, hashes, machine/account identifiers or exception text. When diagnostics are enabled, the setup journal
 records fixed categories and exit/status codes, never command output or exception
 messages. App console output and the report deliberately preserve original paths
 and names: keep them private. Generated venv/runtime metadata can contain its own
@@ -94,7 +94,9 @@ unsupported, corrupt, ambiguous or oversized states. Checksums detect accidental
 changes; they are not signatures against a party able to replace the whole file.
 The same offline, local-workspace, atomic-output and read-only guards apply.
 Comparison output cannot overwrite either input, including known filesystem aliases.
-The two INI files are the only editable packaged inputs. Both entry points share
+The two TXT config files are the only editable packaged inputs. Both entry points share
 the exclusive workspace lock and exact pinned runtime. No GUI, EXE, alternate
 capture engine or user machine history search is included. Historical states must
 be kept outside a scanned project if renamed/copied into arbitrary XLSX filenames.
+
+Normal duplicate mode uses bounded samples and labels matches possible; it is not proof of byte equality. Quick duplicate detection and diagnostics-off are defaults. Timestamped reports preserve prior states; collisions receive a numeric suffix. Only the two TXT config files are editable.

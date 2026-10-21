@@ -7,9 +7,9 @@ are inspected recursively. XlsxWriter is the only report writer.
 [Download the small Windows ZIP](../../releases/latest/download/folder-review-windows-x64.zip) ·
 [Releases and checksums](../../releases/latest)
 
-Extract into a writable local folder. Open **folder-review.ini** in Windows Notepad,
+Extract into a writable local folder. Open **folder-review.txt** in Windows Notepad,
 set `folder`, save, then double-click **folder-review.bat**. Use that same batch file for
-every scan. Use **folder-change-review.bat** with its separate INI to compare two saved states. No GUI, system Python, uv or 7-Zip installation is required.
+every scan. Use **folder-change-review.bat** with its separate TXT config to compare two saved states. No GUI, system Python, uv or 7-Zip installation is required.
 
 The first start downloads the fixed, checksum-verified runtime and packages.
 Later unchanged starts run offline without invoking uv or checking for updates.
@@ -17,24 +17,24 @@ User settings do not change the installed Python, uv or dependency versions.
 
 ```text
 folder-review.bat          prepare once if needed, then create an inventory/state
-folder-review.ini          folder, inventory and state settings
+folder-review.txt          folder, inventory and state settings
 folder-change-review.bat   compare two saved XLSX states; same shared runtime
-folder-change-review.ini   before/after full paths and comparison report filename
+folder-change-review.txt   before/after full paths and comparison report filename
 support/                  code, notices and all generated runtime/state
-folder-review.xlsx        inventory/state after a successful scan
+folder-review-YYYY-MM-DD_HH-MM-SS.xlsx  inventory/state; previous states retained
 folder-change-review.xlsx comparison report
 ```
 
-All application-created files stay in that folder. Runtime, cache, setup history,
-neutral scan logs and temporary work stay under `support/state/`. There is no
+All application-created files stay in that folder. Runtime, cache, optional setup journal,
+optional neutral logs and temporary work stay under `support/state/`. There is no
 AppData/system-temp fallback. Temporary scan work is removed on normal exit;
 a crash can leave `work-*` directories. Close all instances before cleaning them.
 Keep the whole folder together when copying/moving it: after a move the launcher
 recreates its venv from the retained cache **offline**, preserving settings and
 reports. If that cache is incomplete, use a fresh extraction with online setup.
 
-Both reports always stay beside the batch files. Its filename can be changed in settings.
-An existing report is atomically replaced only after a successful save. The tool
+Both reports always stay beside the batch files. Their base filenames can be changed in settings. Inventory reports receive a local date/time suffix; comparison output keeps its configured filename.
+Inventory states are retained; the comparison report is atomically replaced only after a successful save. The tool
 may be inside input: its support folder and selected report are excluded. Other
 input files stay read-only. Selecting support itself as input is rejected. SMB
 input remains supported; the tool and report stay local. Links are listed without
@@ -42,38 +42,60 @@ following their targets. OS access-time updates/cloud hydration may still occur.
 
 ## Settings
 
-`folder-review.ini` uses literal paths: paste backslashes as-is, without escaping.
+`folder-review.txt` uses literal paths: paste backslashes as-is, without escaping.
 Quoted paths are accepted. Percent signs and Unicode remain literal. UTF-8 and
 UTF-16 with BOM are supported. Unknown/duplicate settings and invalid values fail
-before scanning. Keep the `[review]` section; edit values only.
+before scanning. Keep the `[review]` section; edit values only. TXT files open naturally in Windows Notepad.
 
 | Setting | Meaning / default |
 |---|---|
 | `folder` | Required folder path; blank in the download |
 | `state_mode` | `quick` default; `sampled` content samples; `full` complete SHA-256 |
-| `duplicates` | `filtered` default; `off` quick inventory; `all` full fingerprints |
+| `duplicates` | `quick` default (off); `normal` bounded possible matches; `full` exact hashes |
 | `workers` | `auto`, or 1–64 |
-| `report` | `folder-review.xlsx`; filename only |
+| `report` | `folder-review.xlsx`; base filename, local date/time appended |
 | `full_metadata` | `no`; `yes` adds advanced filesystem/raw fingerprint columns |
-| `diagnostics` | `yes`; bounded neutral diagnostic logs |
+| `diagnostics` | `no`; opt in to bounded neutral diagnostic logs for troubleshooting |
 | `max_expanded_gib` | `100`; `0` disables the archive byte limit |
 | `max_archive_seconds` | `21600`; `0` disables the cooperative archive time limit |
 | `max_rows` | `1048570`; Excel inventory-row limit |
 
-Filtered duplicate detection fully hashes only possible equal-content candidates,
-using lossless size/prefix filters. Only repeated complete contents get consecutive
-numeric `Duplicate group` IDs. Unique/unhashed/virtual rows have blank IDs. Full
-fingerprints read every readable leaf and can be slow over SMB. Quick inventory
-skips duplicate hashing. All modes retain archive CRC/integrity checks; archive
-members participate in duplicate matching when enabled. Content IDs belong to
-one report; concurrent input changes are not a filesystem snapshot.
+Duplicate modes:
+
+- **quick** (default): no duplicate hashing or group IDs. `off` is also accepted.
+- **normal**: compare file size and up to three 8 KiB samples (beginning, middle,
+  end). Only equal-size/prefix candidates need extra ordinary-file reads, at most
+  **24 KiB per candidate**. Archive samples are collected while integrity is already
+  checked. Matching rows receive consecutive **Possible duplicate group** IDs.
+  Unsampled differences can be missed; these groups are leads for review, not
+  proof of equality. Small files are sampled fully.
+- **full**: BLAKE3 of complete contents; confirmed **Duplicate group** IDs. Reads
+  every readable leaf and can be very slow over SMB. This is explicitly opt-in.
+
+The old filtered implementation still read every byte of its remaining candidates.
+Common size/Office prefixes can leave many GiB to transfer. Normal replaces that
+cost with bounded samples. Legacy source-CLI modes remain accepted for compatibility;
+use the three options above in the TXT config. Archive CRC/integrity checks stay
+active in every mode. Empty/virtual/error rows do not receive duplicate IDs.
+
+The TXT files put editable settings first, exact permitted option words next,
+and explanations separately under NOTES. Values are literal; unknown or repeated
+keys fail before scanning. Diagnostics are off in **both** configs. Enable
+`diagnostics=yes` only when troubleshooting; this also enables the setup journal.
+Normal runs create no application logs. Runtime readiness/cache/lock files are
+necessary portable state, not scan history logs.
+
+Inventory reports use names such as **folder-review-2026-10-21_14-05-09.xlsx**.
+Local year/month/day and 24-hour time sort chronologically. Same-second collisions
+get `_001`, `_002`, etc.; earlier workbooks are preserved. The tool excludes its
+recognized timestamped inventory reports at its own location during self-scans.
 
 ## Compare two saved states
 
-1. Create the first state with folder-review.bat. Keep that XLSX under a distinct
-   filename; the next inventory run replaces its configured report.
+1. Create the first state with folder-review.bat. Its timestamped XLSX is retained
+   automatically when you create the next state.
 2. Later create a second state of the same project with the same `state_mode`.
-3. In folder-change-review.ini, set `before` and `after` to the two full XLSX paths.
+3. In folder-change-review.txt, set `before` and `after` to the two full XLSX paths.
    Quoted, Unicode and SMB paths are accepted. Run folder-change-review.bat.
 4. Open folder-change-review.xlsx. Comparison only reads the saved workbooks;
    the original project can be offline. No live recapture or GUI is involved.
@@ -187,7 +209,7 @@ Nuitka remains a local experiment.
 
 Developer source runs keep the existing CLI: install the frozen dependencies,
 then `python -B folder_review.py --root /data/input`. With no arguments it reads
-folder-review.ini. Run regression tests with the `test` dependency group; openpyxl is
+folder-review.txt. Run regression tests with the `test` dependency group; openpyxl is
 an independent test reader, never the production writer. Native bootstrap/report
 acceptance lives in `tests/windows_portable.ps1`.
 

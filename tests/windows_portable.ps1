@@ -26,12 +26,17 @@ $env:UV_PYTHON_INSTALL_DIR=$outside
 $records=New-Object Collections.Generic.List[object]
 
 function Set-Setting([string]$Name,[string]$Value,[switch]$Unicode) {
-    $path=Join-Path $root 'folder-review.ini'
+    $path=Join-Path $root 'folder-review.txt'
     $text=[IO.File]::ReadAllText($path)
     $evaluator=[Text.RegularExpressions.MatchEvaluator]{param($m) $Name+' = '+$Value}
     $text=[regex]::Replace($text,('(?m)^'+[regex]::Escape($Name)+'\s*=.*$'),$evaluator)
     $encoding=if($Unicode){[Text.Encoding]::Unicode}else{$utf8}
     [IO.File]::WriteAllText($path,$text,$encoding)
+}
+
+function Get-InventoryReport {
+    $item=Get-ChildItem -LiteralPath $root -File -Filter 'folder-review-*.xlsx' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if($item){return $item.FullName}
 }
 
 function Invoke-Tool([string]$Case,[int]$Expected,[switch]$Batch,[switch]$Change) {
@@ -49,6 +54,7 @@ function Invoke-Tool([string]$Case,[int]$Expected,[switch]$Batch,[switch]$Change
         $code=$LASTEXITCODE
     } finally { $ErrorActionPreference=$old; $timer.Stop() }
     $script:lastOutput=($lines | Out-String)
+    if(-not $Change -and $code -in @(0,2)){$script:report=Get-InventoryReport}
     if($code -ne $Expected) { throw "$Case expected $Expected, got $code`n$lastOutput" }
     if(@(Get-ChildItem -LiteralPath $outside -Force).Count -ne 0) { throw 'Tool wrote into external profile/temp canary' }
     if(@(Get-ChildItem -LiteralPath (Join-Path $root 'support\state') -Filter 'work-*' -ErrorAction SilentlyContinue).Count) { throw 'Scan workspaces leaked' }
@@ -59,14 +65,16 @@ function Invoke-Tool([string]$Case,[int]$Expected,[switch]$Batch,[switch]$Change
 Set-Setting 'folder' ('"'+$inputDir+'"') -Unicode
 Invoke-Tool 'fresh-setup-and-scan' 0
 if($lastOutput -notmatch 'Setup: COMPLETE' -or $lastOutput -notmatch 'Scan status: COMPLETE') { throw 'Fresh preparation did not run' }
-$report=Join-Path $root 'folder-review.xlsx'
+$report=Get-InventoryReport
+if((Test-Path (Join-Path $root 'support\state\logs')) -or (Test-Path (Join-Path $root 'support\state\setup.jsonl'))){throw 'Default scan created logs'}
+Set-Setting 'diagnostics' 'yes'
 if(-not(Test-Path -LiteralPath $report)) { throw 'Report not beside the launcher' }
 # The inventory owns capture; the second entry point consumes those exact XLSX files.
 $project=Join-Path $base 'change-input'
 New-Item -ItemType Directory -Path $project | Out-Null
 foreach($name in @('stable.txt','changed.txt','deleted.txt')) { [IO.File]::WriteAllText((Join-Path $project $name),'original',$utf8) }
 Set-Setting 'folder' $project
-Set-Setting 'duplicates' 'off'
+Set-Setting 'duplicates' 'quick'
 Invoke-Tool 'capture-before-state' 0 -Batch
 $stateA=Join-Path $base 'before.xlsx'
 Copy-Item -LiteralPath $report -Destination $stateA
@@ -78,23 +86,24 @@ $stateB=Join-Path $base 'after.xlsx'
 Copy-Item -LiteralPath $report -Destination $stateB
 $stateHashes=@((Get-FileHash $stateA).Hash,(Get-FileHash $stateB).Hash)
 $comparisonConfig="[compare]`nbefore = `"$stateA`"`nafter = `"$stateB`"`ndiagnostics = yes`n"
-[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),$comparisonConfig,[Text.Encoding]::Unicode)
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.txt'),$comparisonConfig,[Text.Encoding]::Unicode)
 Invoke-Tool 'compare-xlsx-states-actual-batch' 0 -Batch -Change
 foreach($category in @('Added','Deleted','Changed','Unchanged')) {
     if($lastOutput -notmatch ($category+': 1')) { throw 'Comparison did not preserve the expected change classifications' }
 }
 $comparisonReport=Join-Path $root 'folder-change-review.xlsx'
 $comparisonHash=(Get-FileHash $comparisonReport).Hash
-[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),"[compare]`nbefore = invalid`nafter = invalid`n",$utf8)
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.txt'),"[compare]`nbefore = invalid`nafter = invalid`n",$utf8)
 Invoke-Tool 'bad-comparison-config-preserves-report' 1 -Change
 if((Get-FileHash $comparisonReport).Hash -ne $comparisonHash){throw 'Invalid comparison replaced its report'}
-[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),$comparisonConfig,$utf8)
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.txt'),$comparisonConfig,$utf8)
 $oldRoot=$root
 $root=Join-Path $base 'comparison-first'
 New-Item -ItemType Directory -Path $root | Out-Null
 Expand-Archive -LiteralPath $Zip -DestinationPath $root
-[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.ini'),$comparisonConfig,$utf8)
+[IO.File]::WriteAllText((Join-Path $root 'folder-change-review.txt'),($comparisonConfig -replace 'diagnostics = yes','diagnostics = no'),$utf8)
 Invoke-Tool 'comparison-first-entry-prepares-shared-runtime' 0 -Batch -Change
+if((Test-Path (Join-Path $root 'support\state\logs')) -or (Test-Path (Join-Path $root 'support\state\setup.jsonl'))){throw 'Default comparison created logs'}
 $root=$oldRoot
 if((Get-FileHash $stateA).Hash -ne $stateHashes[0] -or (Get-FileHash $stateB).Hash -ne $stateHashes[1]){throw 'Comparison modified input states'}
 Set-Setting 'folder' $inputDir
@@ -110,7 +119,7 @@ $env:HTTPS_PROXY='http://127.0.0.1:9'
 $env:ALL_PROXY='http://127.0.0.1:9'
 $env:NO_PROXY=''
 try {
-    foreach($mode in @('off','filtered','all')) {
+    foreach($mode in @('quick','normal','full')) {
         Set-Setting 'duplicates' $mode
         Invoke-Tool ('offline-'+$mode) 0
         if($lastOutput -notmatch 'Setup: SKIPPED' -or $lastOutput -match 'Download:|First-time setup') { throw 'Recurring scan performed preparation' }
@@ -178,6 +187,8 @@ $receipt=[ordered]@{
     smb_input_checked=$smbAvailable
     xlsx_comparison_input_bytes_unchanged=$true
     shared_runtime_both_entry_points=$true
+    default_runs_create_no_logs=$true
+    timestamped_states_preserved=$true
     cases=$records.ToArray()
 }
 if($Results) { [IO.File]::WriteAllText($Results,($receipt|ConvertTo-Json -Depth 6),$utf8) }

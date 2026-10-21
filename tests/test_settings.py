@@ -19,7 +19,7 @@ class SettingsTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.path = self.root / "folder-review.ini"
+        self.path = self.root / "folder-review.txt"
         self.location = mock.patch.object(
             core, "application_directory", return_value=self.root
         )
@@ -40,7 +40,11 @@ class SettingsTests(unittest.TestCase):
                     self.assertEqual(core.run_settings(self.path), 2)
                 args, selected, output, _ = run.call_args.args
                 self.assertEqual(selected, target)
-                self.assertEqual(output, self.root / "result.xlsx")
+                self.assertEqual(output.parent, self.root)
+                self.assertRegex(
+                    output.name,
+                    r"^result-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_\d{3})?\.xlsx$",
+                )
                 self.assertEqual(
                     (args.duplicates, args.workers, args.full_metadata, args.no_log),
                     ("off", 4, True, True),
@@ -127,12 +131,14 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(core.run_settings(self.path), 0)
         self.assertEqual((self.root / "leaf.txt").read_bytes(), b"unchanged")
         self.assertFalse(list((support / "state").glob("work-*")))
-        self.assertTrue(list((support / "state/logs").glob("*.jsonl")))
-        book = load_workbook(self.root / "folder-review.xlsx", read_only=True)
+        self.assertFalse((support / "state/logs").exists())
+        book = load_workbook(
+            next(self.root.glob("folder-review-*.xlsx")), read_only=True
+        )
         try:
             rows = list(book["folder_review"].iter_rows(min_row=6, values_only=True))
             names = [r[rows[0].index("File name")] for r in rows[1:]]
-            self.assertEqual(set(names), {"leaf.txt", "folder-review.ini"})
+            self.assertEqual(set(names), {"leaf.txt", "folder-review.txt"})
         finally:
             book.close()
 

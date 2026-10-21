@@ -522,7 +522,7 @@ def write_report(
             issues_sheet.freeze_panes(5, 0)
 
 
-def compare_files(before_path, after_path, output, progress=None, diagnostics=True):
+def compare_files(before_path, after_path, output, progress=None, diagnostics=False):
     """Compare saved workbooks offline; the recorded project paths stay lexical."""
     from review_state import load_snapshot, path_module
 
@@ -619,14 +619,14 @@ def run_settings(path, progress=None):
     inputs = [core.pasted_path(values.get(key, "")) for key in ("before", "after")]
     if not all(inputs) or any(not os.path.isabs(p) for p in inputs):
         raise ValueError(
-            "Set before and after to two full XLSX state paths in folder-change-review.ini."
+            "Set before and after to two full XLSX state paths in folder-change-review.txt."
         )
     name = core.report_filename(values.get("report", OUTPUT_FILE))
     counts = compare_files(
         *inputs,
         core.application_directory() / name,
         progress,
-        values.getboolean("diagnostics", True),
+        values.getboolean("diagnostics", False),
     )
     return 2 if counts.partial else 0
 
@@ -640,9 +640,9 @@ def main():
 
         if sys.argv[1:]:
             raise ValueError(
-                "Edit folder-change-review.ini; this entry point accepts no arguments."
+                "Edit folder-change-review.txt; this entry point accepts no arguments."
             )
-        return run_settings(core.application_directory() / "folder-change-review.ini")
+        return run_settings(core.application_directory() / "folder-change-review.txt")
     except Exception as error:  # noqa: BLE001 -- console boundary preserves existing reports
         print("ERROR: " + report_error_message(error), flush=True)
         return 1

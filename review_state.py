@@ -49,10 +49,14 @@ def capture_state(root, physical_files, stats, mode, workers, output):
     module = path_module(root)
     base = core.application_directory()
     scopes = []
-    outputs = [Path(output), base / changes.OUTPUT_FILE]
+    outputs = [
+        Path(output),
+        base / changes.OUTPUT_FILE,
+        *core.inventory_report_files(Path(output)),
+    ]
     try:
         values = core.read_ini(
-            base / "folder-change-review.ini",
+            base / "folder-change-review.txt",
             "compare",
             {"before", "after", "report", "diagnostics"},
         )["compare"]
@@ -68,9 +72,9 @@ def capture_state(root, physical_files, stats, mode, workers, output):
             base / name
             for name in (
                 "folder-review.bat",
-                "folder-review.ini",
+                "folder-review.txt",
                 "folder-change-review.bat",
-                "folder-change-review.ini",
+                "folder-change-review.txt",
             )
         ],
     ]:
@@ -252,7 +256,7 @@ def validate_snapshot(snapshot):
     scopes = snapshot.get("excluded_tool_paths")
     if (
         not isinstance(scopes, list)
-        or len(scopes) > 64
+        or len(scopes) > core.EXCEL_MAX_DATA_ROWS
         or any(
             not isinstance(scope, str)
             or not valid_parts(scope.replace("\\", module.sep).split(module.sep))

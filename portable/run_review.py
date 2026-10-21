@@ -31,6 +31,6 @@ core.configure_rar_backend = configure_backend
 if __name__ == "__main__":
     if sys.argv[1:]:
         raise SystemExit(
-            "Edit folder-review.ini; the portable entry point accepts no scan arguments."
+            "Edit folder-review.txt; the portable entry point accepts no scan arguments."
         )
     raise SystemExit(core.main())

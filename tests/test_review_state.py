@@ -194,7 +194,7 @@ class WorkbookStateTests(unittest.TestCase):
         counts = self.compare(path, path)
         self.assertTrue(counts.partial)
         self.assertEqual(counts, {})
-        settings = self.tool / "folder-change-review.ini"
+        settings = self.tool / "folder-change-review.txt"
         settings.write_text(f"[compare]\nbefore={path}\nafter={path}\ndiagnostics=no")
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(changes.run_settings(settings), 2)
@@ -310,7 +310,7 @@ class WorkbookStateTests(unittest.TestCase):
     def test_notepad_comparison_config_is_literal_and_separate(self):
         (self.root / "пример 100%.txt").write_bytes(b"a")
         _, path, _ = self.capture()
-        config = self.tool / "folder-change-review.ini"
+        config = self.tool / "folder-change-review.txt"
         for encoding in ("utf-8", "utf-8-sig", "utf-16"):
             config.write_text(
                 f'[compare]\nbefore="{path}"\nafter="{path}"\nreport=changes.xlsx\ndiagnostics=no',
@@ -332,7 +332,7 @@ class WorkbookStateTests(unittest.TestCase):
         (self.root / "private-file.txt").write_bytes(b"a")
         _, path, _ = self.capture()
         with contextlib.redirect_stdout(io.StringIO()):
-            changes.compare_files(path, path, self.output)
+            changes.compare_files(path, path, self.output, diagnostics=True)
         for log in (self.tool / "folder-review-data/logs").glob("*.jsonl"):
             text = log.read_text()
             self.assertNotIn("private-file", text)

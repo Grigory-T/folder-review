@@ -56,6 +56,8 @@ from py7zr import Py7zIO, WriterFactory
 from xlsxwriter.color import Color
 from xlsxwriter.utility import xl_col_to_name
 
+from duplicate_sampling import SampleCapture
+
 # User configuration ---------------------------------------------------------
 
 ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
@@ -63,7 +65,7 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 OUTPUT_FILE = "folder-review.xlsx"
 
 # Increment with the release version; included in neutral diagnostic logs.
-TOOL_VERSION = "0.20.0"
+TOOL_VERSION = "0.21.0"
 
 
 class PerformanceLog:
@@ -512,6 +514,7 @@ class ArchiveNode:
     properties: FileProperties | None = None
     content_hash: bytes | None = None
     hash_contents: bool = True
+    sample_contents: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -536,6 +539,7 @@ class ResultRow:
     virtual_reason: str | None = None
     # Internal lossless prefilter only; never exported or used as proof of a duplicate.
     prefix_hash: bytes | None = None
+    sample_hash: bytes | None = None
 
     @property
     def is_virtual(self) -> bool:
@@ -569,6 +573,7 @@ class WorkBudget:
     expanded_bytes: int = 0
     rows_claimed: int = 0
     hash_contents: bool = True
+    sample_contents: bool = False
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def check_time(self) -> None:
@@ -1641,6 +1646,7 @@ def make_row(
     virtual_folder: bool = False,
     virtual_reason: str | None = None,
     prefix_hash: bytes | None = None,
+    sample_hash: bytes | None = None,
 ) -> ResultRow:
     leaf_name = levels[-1]
     content_type = refine_named_content_type(leaf_name, content_type)
@@ -1664,6 +1670,7 @@ def make_row(
         virtual_folder=virtual_folder,
         virtual_reason=virtual_reason,
         prefix_hash=prefix_hash,
+        sample_hash=sample_hash,
     )
 
 
@@ -1730,6 +1737,38 @@ def file_digest(path: str, expected_size: int | None = None) -> bytes:
             "File changed during inspection; Content fingerprint was not retained"
         )
     return digest.digest()
+
+
+@diagnostic_operation("sample")
+def file_sample_digest(
+    path: str, expected_size: int, expected_mtime: int | None = None
+) -> bytes:
+    """Read at most 24 KiB; this is a possible-match signature, not equality."""
+    capture = SampleCapture(expected_size)
+    with open(extended_path(path), "rb", buffering=0) as stream:
+        for start, end in capture.ranges:
+            stream.seek(start)
+            position = start
+            while position < end:
+                data = stream.read(end - position)
+                if not data:
+                    raise OSError(
+                        "File changed during duplicate sampling; sample was not retained"
+                    )
+                capture.update(data, position)
+                diagnostic_count("sample_bytes", len(data))
+                position += len(data)
+        current = os.stat(extended_path(path), follow_symlinks=False)
+        if (
+            current.st_size != expected_size
+            or (expected_mtime is not None and current.st_mtime_ns != expected_mtime)
+            or stat.S_ISLNK(current.st_mode)
+            or getattr(current, "st_file_attributes", 0) & 0x400
+        ):
+            raise OSError(
+                "File changed during duplicate sampling; sample was not retained"
+            )
+    return capture.digest()
 
 
 @diagnostic_operation("source_metadata")
@@ -2179,6 +2218,12 @@ def archive_row(
     integrity_status: str | None = None,
 ) -> ResultRow:
     digest = None
+    sample = None
+    if node.sample_contents and not error and integrity_status == INTEGRITY_VERIFIED:
+        try:
+            sample = file_sample_digest(node.source_path, node.size)
+        except OSError as exc:
+            error = exception_text(exc)
     if node.hash_contents and not error and integrity_status == INTEGRITY_VERIFIED:
         try:
             digest = node.content_hash or file_digest(node.source_path, node.size)
@@ -2197,6 +2242,7 @@ def archive_row(
         ),
         properties=node.properties,
         content_hash=digest,
+        sample_hash=sample,
     )
 
 
@@ -2288,12 +2334,17 @@ def inspect_member_stream(
     if archive_type is None:
         error = None
         digest = blake3(head) if budget.hash_contents else None
+        sample = SampleCapture(size) if budget.sample_contents else None
+        if sample is not None:
+            sample.update(head)
         total = len(head)
         integrity_status = INTEGRITY_VERIFIED
         try:
             while chunk := read_counted(stream, 1024 * 1024, budget):
                 if digest is not None:
                     digest.update(chunk)
+                if sample is not None:
+                    sample.update(chunk)
                 total += len(chunk)
             if total != size:
                 raise OSError("Archive member size differs from fully read content")
@@ -2312,6 +2363,9 @@ def inspect_member_stream(
                 integrity_status=integrity_status,
                 content_hash=digest.digest()
                 if error is None and digest is not None
+                else None,
+                sample_hash=sample.digest()
+                if sample is not None and error is None
                 else None,
             )
         ]
@@ -2590,12 +2644,17 @@ class MemberCaptureIO(Py7zIO):
         self.output = None
         self.oversized = False
         self.digest = blake3() if budget.hash_contents else None
+        self.sample = (
+            SampleCapture(self.expected_size) if budget.sample_contents else None
+        )
 
     def write(self, chunk):
         raw = bytes(chunk)
         self.budget.consume_expanded(len(raw))
         if self.digest is not None:
             self.digest.update(raw)
+        if self.sample is not None:
+            self.sample.update(raw)
         if self.mode == "archive":
             self.output.write(raw)
             self.total_written += len(raw)
@@ -2817,6 +2876,9 @@ def expand_7z(
                     bom=BOM_NOT_PRESENT,
                     integrity_status=INTEGRITY_VERIFIED,
                     content_hash=blake3(b"").digest() if budget.hash_contents else None,
+                    sample_hash=SampleCapture(0).digest()
+                    if budget.sample_contents
+                    else None,
                 )
             )
         elif product is None or not product.head or product.total_written != size:
@@ -2874,6 +2936,9 @@ def expand_7z(
                     integrity_status=INTEGRITY_VERIFIED,
                     content_hash=product.digest.digest()
                     if product.digest is not None
+                    else None,
+                    sample_hash=product.sample.digest()
+                    if product.sample is not None
                     else None,
                 )
             )
@@ -2990,8 +3055,15 @@ def process_archive_node(
 ) -> list[ResultRow]:
     if budget is None:
         budget = WorkBudget(rows_claimed=1)
-    if not budget.hash_contents and node.hash_contents:
-        node = replace(node, hash_contents=False)
+    if (
+        node.hash_contents != budget.hash_contents
+        or node.sample_contents != budget.sample_contents
+    ):
+        node = replace(
+            node,
+            hash_contents=budget.hash_contents,
+            sample_contents=budget.sample_contents,
+        )
     try:
         budget.check_time()
     except BudgetExceeded as exc:
@@ -3082,7 +3154,7 @@ def process_file(
             )
         ]
 
-    sample = [] if budget.hash_contents else None
+    sample = [] if budget.hash_contents or budget.sample_contents else None
     file_type, bom = inspect_file(item.path, sample=sample)
     if should_expand_archive(file_type, item.levels[-1]):
         with (
@@ -3153,9 +3225,10 @@ def inspect_files(
     if budget is None:
         budget = WorkBudget()
     mode = duplicates or ("all" if hash_all else "filtered")
-    if mode not in {"off", "filtered", "all"}:
+    if mode not in {"quick", "normal", "full", "off", "filtered", "all"}:
         raise ValueError("Unknown duplicate mode.")
-    budget.hash_contents = mode != "off"
+    budget.hash_contents = mode in {"full", "all", "filtered"}
+    budget.sample_contents = mode == "normal"
     budget.initialize_rows(len(physical_files))
     rows: list[ResultRow] = []
     completed = 0
@@ -3168,7 +3241,10 @@ def inspect_files(
             try:
                 pending.add(
                     executor.submit(
-                        process_file, next(items), budget, hash_content=mode == "all"
+                        process_file,
+                        next(items),
+                        budget,
+                        hash_content=mode in {"full", "all"},
                     )
                 )
             except StopIteration:
@@ -3191,7 +3267,7 @@ def inspect_files(
                             process_file,
                             next(items),
                             budget,
-                            hash_content=mode == "all",
+                            hash_content=mode in {"full", "all"},
                         )
                     )
                 except StopIteration:
@@ -3217,12 +3293,16 @@ def inspect_files(
                 last_print = now
 
     rows.sort(key=lambda row: row.full_path.casefold())
-    if mode == "filtered":
-        hash_duplicate_candidates(rows, physical_files, workers, progress)
+    if mode in {"filtered", "normal"}:
+        hash_duplicate_candidates(
+            rows, physical_files, workers, progress, sampled=mode == "normal"
+        )
     return rows
 
 
-def hash_duplicate_candidates(rows, physical_files, workers, progress=None):
+def hash_duplicate_candidates(
+    rows, physical_files, workers, progress=None, *, sampled=False
+):
     """Lossless size/prefix filters; archive leaves participate conservatively."""
     emit = progress or print
     eligible = lambda row: (
@@ -3251,7 +3331,13 @@ def hash_duplicate_candidates(rows, physical_files, workers, progress=None):
     skipped = 0
     skipped_prefix = 0
     for index, row in enumerate(rows):
-        if not eligible(row) or row.content_hash is not None or row.in_archive != "No":
+        if (
+            not eligible(row)
+            or (
+                row.sample_hash is not None if sampled else row.content_hash is not None
+            )
+            or row.in_archive != "No"
+        ):
             continue
         item = physical.get(normalized_key(row.full_path))
         if item is None:
@@ -3266,14 +3352,17 @@ def hash_duplicate_candidates(rows, physical_files, workers, progress=None):
             candidates.append((index, item))
         else:
             skipped_prefix += 1
-    diagnostic_count("hash_candidates", len(candidates))
-    diagnostic_count("hash_candidate_bytes", sum(item.size for _, item in candidates))
+    prefix = "sample" if sampled else "hash"
+    diagnostic_count(prefix + "_candidates", len(candidates))
+    diagnostic_count(
+        prefix + "_candidate_bytes", sum(item.size for _, item in candidates)
+    )
     diagnostic_count("hash_skipped_unique_size", skipped)
     diagnostic_count("hash_skipped_unique_prefix", skipped_prefix)
     if _performance_log is not None:
         _performance_log.set_phase("hashing")
     emit(
-        f"Duplicate hash candidates: {len(candidates):,} | unique-size files skipped: {skipped:,} | distinct-prefix files skipped: {skipped_prefix:,}"
+        f"Duplicate {'sample' if sampled else 'hash'} candidates: {len(candidates):,} | unique-size files skipped: {skipped:,} | distinct-prefix files skipped: {skipped_prefix:,}"
     )
     if not candidates:
         return
@@ -3288,7 +3377,17 @@ def hash_duplicate_candidates(rows, physical_files, workers, progress=None):
                 index, item = next(items)
             except StopIteration:
                 return
-            pending[executor.submit(file_digest, item.path, item.size)] = index
+            if sampled:
+                pending[
+                    executor.submit(
+                        file_sample_digest,
+                        item.path,
+                        item.size,
+                        item.properties.modified_ns if item.properties else None,
+                    )
+                ] = index
+            else:
+                pending[executor.submit(file_digest, item.path, item.size)] = index
 
         for _ in range(workers * 2):
             submit_next()
@@ -3297,18 +3396,19 @@ def hash_duplicate_candidates(rows, physical_files, workers, progress=None):
             for future in done:
                 index = pending.pop(future)
                 try:
-                    rows[index] = replace(rows[index], content_hash=future.result())
+                    field = "sample_hash" if sampled else "content_hash"
+                    rows[index] = replace(rows[index], **{field: future.result()})
                 except OSError as exc:
                     rows[index] = replace(rows[index], error=exception_text(exc))
                     diagnostic_count("hash_errors")
                     diagnostic_count("row_errors")
                 completed += 1
-                diagnostic_count("hash_candidates_completed")
+                diagnostic_count(prefix + "_candidates_completed")
                 submit_next()
             now = time.monotonic()
             if now - last_print >= 10:
                 emit(
-                    f"Duplicate hash candidates completed: {completed:,} / {len(candidates):,}"
+                    f"Duplicate {'sample' if sampled else 'hash'} candidates completed: {completed:,} / {len(candidates):,}"
                 )
                 last_print = now
 
@@ -3499,10 +3599,20 @@ def write_workbook(
         )
 
     rows = [display_row(row) for row in rows]
+    normal_duplicates = (
+        report is not None and report.duplicate_mode == "normal"
+    ) or any(row.sample_hash is not None for row in rows)
+    group_header = (
+        "Possible duplicate group" if normal_duplicates else "Duplicate group"
+    )
+
+    def group_key(row):
+        return row.size, row.sample_hash if normal_duplicates else row.content_hash
+
     content_counts = {}
     for row in rows:
-        if row.content_hash is not None and not row.is_virtual:
-            key = (row.size, row.content_hash)
+        if group_key(row)[1] is not None and not row.is_virtual:
+            key = group_key(row)
             content_counts[key] = content_counts.get(key, 0) + 1
     content_groups = {
         key: index
@@ -3524,7 +3634,7 @@ def write_workbook(
         "Raw suffix",
         "File size (bytes)",
         "File size (MiB)",
-        "Duplicate group",
+        group_header,
         "Content hash (BLAKE3)",
         "Item type",
         "Virtual row",
@@ -3657,7 +3767,7 @@ def write_workbook(
         ws.append(header_row)
 
         centered_headers = {
-            "Duplicate group",
+            group_header,
             "Virtual row",
             "Leaf depth",
             "Extension",
@@ -3713,6 +3823,8 @@ def write_workbook(
                 if row.error
                 else "Read"
                 if row.content_hash is not None
+                else "Sampled (possible duplicates)"
+                if row.sample_hash is not None
                 else "Link"
                 if row.link_type
                 else "Not hashed"
@@ -3735,7 +3847,7 @@ def write_workbook(
                 if not row.is_virtual
                 else None,
                 "File name": row.leaf_name,
-                "Duplicate group": content_groups.get((row.size, row.content_hash))
+                group_header: content_groups.get(group_key(row))
                 if not row.is_virtual
                 else None,
                 "Content hash (BLAKE3)": row.content_hash.hex()
@@ -3865,6 +3977,7 @@ def write_workbook(
                 max_expanded_bytes=DEFAULT_MAX_EXPANDED_BYTES,
                 max_archive_seconds=None,
                 max_rows=EXCEL_MAX_DATA_ROWS,
+                duplicate_mode="normal" if normal_duplicates else "filtered",
             )
 
         status_ws = _ReportSheet(wb, "scan_status", formats)
@@ -3938,19 +4051,34 @@ def write_workbook(
             (
                 "Content fingerprints",
                 "Disabled: Quick inventory does not generate fingerprints or duplicate IDs. Archive integrity checks remain enabled."
-                if report.duplicate_mode == "off"
+                if report.duplicate_mode in {"quick", "off"}
+                else "Possible duplicate groups use size and BLAKE3 of beginning/middle/end samples, at most 24 KiB per file. These are NOT confirmed duplicates; edits outside the samples can be missed. Small files are sampled fully. Use Full mode for exact full-content matching."
+                if report.duplicate_mode == "normal"
                 else "BLAKE3-256 of complete contents. Lossless size/prefix filters skip ordinary files that cannot be duplicates unless --hash-all is selected; archive leaves are hashed during integrity inspection. Only repeated contents receive a Duplicate group ID, consecutive from 1 within this report. Unique, virtual and unhashed rows have blank IDs.",
             ),
             (
                 "Rows with fingerprints",
-                sum(row.content_hash is not None for row in rows),
+                sum(group_key(row)[1] is not None for row in rows),
             ),
             ("Nonvirtual rows", sum(not row.is_virtual for row in rows)),
-            ("Duplicate groups", len(content_groups)),
-            ("Duplicate file rows", sum(content_counts[key] for key in content_groups)),
+            (
+                "Possible duplicate groups"
+                if normal_duplicates
+                else "Duplicate groups",
+                len(content_groups),
+            ),
+            (
+                "Possible duplicate file rows"
+                if normal_duplicates
+                else "Duplicate file rows",
+                sum(content_counts[key] for key in content_groups),
+            ),
             (
                 "Fingerprint mode",
                 {
+                    "quick": "Disabled (quick inventory)",
+                    "normal": "Bounded samples (possible duplicates)",
+                    "full": "All readable files",
                     "off": "Disabled (quick inventory)",
                     "filtered": "Duplicate candidates (size/prefix)",
                     "all": "All readable files",
@@ -4199,7 +4327,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--cli",
         action="store_true",
-        help="Use the terminal folder prompt (normally edit folder-review.ini)",
+        help="Use the terminal folder prompt (normally edit folder-review.txt)",
     )
     parser.add_argument("--root", help="Override ROOT_FOLDER for this run")
     parser.add_argument(
@@ -4212,7 +4340,16 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="New JSONL file in the application logs folder (must not exist)",
     )
     diagnostics.add_argument(
-        "--no-log", action="store_true", help="Disable the neutral performance log"
+        "--no-log",
+        action="store_true",
+        default=True,
+        help="Disable the neutral performance log (default)",
+    )
+    diagnostics.add_argument(
+        "--diagnostics",
+        action="store_false",
+        dest="no_log",
+        help="Enable neutral diagnostic logs for troubleshooting",
     )
     parser.add_argument(
         "--full-metadata",
@@ -4222,9 +4359,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     duplicates = parser.add_mutually_exclusive_group()
     duplicates.add_argument(
         "--duplicates",
-        choices=("off", "filtered", "all"),
-        default="filtered",
-        help="off: quick inventory; filtered: exact duplicate candidates (default); all: full fingerprints (slow)",
+        choices=("quick", "normal", "full", "off", "filtered", "all"),
+        default="quick",
+        help="quick: no duplicates (default); normal: bounded samples, possible matches; full: exact complete hashes",
     )
     duplicates.add_argument(
         "--hash-all",
@@ -4288,7 +4425,9 @@ def run() -> int:
         if not configured_root:
             raise ValueError("No folder was entered.")
     output_path = Path(
-        absolute_path(args.output) if args.output else str(script_dir / OUTPUT_FILE)
+        absolute_path(args.output)
+        if args.output
+        else str(script_dir / timestamped_report_name(OUTPUT_FILE))
     )
     return execute_review(args, configured_root, output_path)
 
@@ -4332,7 +4471,7 @@ def performance_log(args, root: str, progress=None):
     """Persist a local, name-free log even when inspection is blocked on I/O."""
     global _performance_log
     emit = progress or print
-    if args.no_log:
+    if args.no_log and not args.log:
         yield None
         return
     explicit = bool(args.log)
@@ -4406,13 +4545,13 @@ def review_folder(
     full_metadata=False,
     progress=None,
     *,
-    duplicates="filtered",
+    duplicates="quick",
 ) -> int:
     """Shared scanner entry for desktop clients; no global argv/stdout changes."""
     args = parse_args([])
     args.workers = worker_count(str(workers))
     args.full_metadata = bool(full_metadata)
-    if duplicates not in {"off", "filtered", "all"}:
+    if duplicates not in {"quick", "normal", "full", "off", "filtered", "all"}:
         raise ValueError("Unknown duplicate mode.")
     args.duplicates = duplicates
     return execute_review(
@@ -4440,9 +4579,54 @@ def report_exclusions(output: Path, root: str) -> set[str]:
     return excluded
 
 
+_REPORT_STAMP = r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_\d{3})?"
+
+
+def timestamped_report_name(base: str) -> str:
+    stem = Path(report_filename(base)).stem
+    stamp = local_now().strftime("%Y-%m-%d_%H-%M-%S")
+    for number in range(1000):
+        suffix = f"_{number:03d}" if number else ""
+        name = f"{stem}-{stamp}{suffix}.xlsx"
+        if not os.path.lexists(extended_path(application_directory() / name)):
+            return name
+    raise ValueError(
+        "Too many reports created at the same timestamp. Try again in a second."
+    )
+
+
+def inventory_report_files(output: Path) -> list[Path]:
+    """Exclude this tool's timestamped reports, only at its actual location."""
+    stems = {"folder-review"}
+    match = re.fullmatch(
+        r"(.+)-" + _REPORT_STAMP + r"\.xlsx", output.name, re.IGNORECASE
+    )
+    if match:
+        stems.add(match[1])
+    try:
+        names = os.listdir(extended_path(application_directory()))
+    except OSError:
+        return []
+    return [
+        application_directory() / name
+        for name in names
+        if any(
+            re.fullmatch(
+                re.escape(stem) + "-" + _REPORT_STAMP + r"\.xlsx", name, re.IGNORECASE
+            )
+            for stem in stems
+        )
+    ]
+
+
 def scan_exclusions(output: Path, root: str) -> set[str]:
     """Skip changing tool-owned subtrees, including mapped aliases, once per scan."""
     excluded = report_exclusions(output, root)
+    aliases = report_exclusions(application_directory(), root)
+    for path in inventory_report_files(output):
+        excluded.update(
+            normalized_key(os.path.join(alias, path.name)) for alias in aliases
+        )
     for directory in [
         *support_directories(),
         application_directory() / "folder-change-review.xlsx",
@@ -4610,7 +4794,7 @@ def read_ini(path: Path, section: str, allowed: set[str]):
         parser.read_string(data.decode(encoding))
     except (UnicodeError, configparser.Error) as exc:
         raise ValueError(
-            f"Cannot read {path.name}. Use valid INI in UTF-8 or BOM UTF-16."
+            f"Cannot read {path.name}. Use valid section/key settings in UTF-8 or BOM UTF-16."
         ) from exc
     if parser.sections() != [section] or parser.defaults():
         raise ValueError(
@@ -4653,18 +4837,20 @@ def run_settings(path: Path, progress=None) -> int:
     root = pasted_path(settings.get("folder", ""))
     if not root:
         raise ValueError(
-            "Edit folder in folder-review.ini with Notepad, save the file, then run folder-review.bat again."
+            "Edit folder in folder-review.txt with Notepad, save the file, then run folder-review.bat again."
         )
     args = parse_args([])
     args.workers = worker_count(settings.get("workers", "auto"))
-    args.duplicates = settings.get("duplicates", "filtered").strip().lower()
-    if args.duplicates not in {"off", "filtered", "all"}:
-        raise ValueError("duplicates must be off, filtered, or all.")
+    args.duplicates = settings.get("duplicates", "quick").strip().lower()
+    if args.duplicates not in {"quick", "normal", "full", "off"}:
+        raise ValueError(
+            "duplicates must be quick, normal, or full (off is an alias for quick)."
+        )
     args.state_mode = settings.get("state_mode", "quick").strip().lower()
     if args.state_mode not in {"quick", "sampled", "full"}:
         raise ValueError("state_mode must be quick, sampled, or full.")
     args.full_metadata = settings.getboolean("full_metadata", False)
-    args.no_log = not settings.getboolean("diagnostics", True)
+    args.no_log = not settings.getboolean("diagnostics", False)
     for key in ("max_expanded_gib", "max_archive_seconds"):
         if key in settings:
             value = non_negative_float(settings[key])
@@ -4672,7 +4858,7 @@ def run_settings(path: Path, progress=None) -> int:
                 raise ValueError("Archive limits must be finite non-negative numbers.")
             setattr(args, key, value)
     args.max_rows = row_limit(settings.get("max_rows", str(EXCEL_MAX_DATA_ROWS)))
-    name = report_filename(settings.get("report", OUTPUT_FILE))
+    name = timestamped_report_name(report_filename(settings.get("report", OUTPUT_FILE)))
     return execute_review(args, root, application_directory() / name, progress)
 
 
@@ -4687,7 +4873,7 @@ def main() -> int:
             show_licenses()
             return 0
         if not sys.argv[1:]:
-            return run_settings(application_directory() / "folder-review.ini")
+            return run_settings(application_directory() / "folder-review.txt")
         return run()
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

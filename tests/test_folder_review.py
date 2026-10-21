@@ -95,7 +95,9 @@ class FolderReviewTests(unittest.TestCase):
         (source / "private-file-name.txt").write_text("private content")
         log = folder_review.portable_directory() / "logs/neutral.jsonl"
         output = self.root / "report.xlsx"
-        args = folder_review.parse_args(["--log", str(log), "--workers", "1"])
+        args = folder_review.parse_args(
+            ["--log", str(log), "--workers", "1", "--duplicates", "filtered"]
+        )
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(folder_review.execute_review(args, str(source), output), 0)
         text = log.read_text()
@@ -248,7 +250,7 @@ class FolderReviewTests(unittest.TestCase):
         )
         args = folder_review.parse_args(["--hash-all"])
         self.assertEqual(args.duplicates, "all")
-        self.assertEqual(folder_review.parse_args([]).duplicates, "filtered")
+        self.assertEqual(folder_review.parse_args([]).duplicates, "quick")
         full = folder_review.inspect_files(items, 1, duplicates=args.duplicates)
         self.assertEqual(
             next(row for row in full if row.leaf_name == unique.name).content_hash,
@@ -2274,7 +2276,7 @@ class FolderReviewTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
         ):
             self.assertEqual(folder_review.run(), 0)
-        self.assertTrue((root / "folder-review.xlsx").is_file())
+        self.assertEqual(len(list(root.glob("folder-review-*.xlsx"))), 1)
         self.assertEqual(tool.read_bytes(), b"ordinary source file")
 
     def test_interactive_first_run_prompts_for_folder(self) -> None:
@@ -2577,7 +2579,7 @@ class FolderReviewTests(unittest.TestCase):
                 folder_review.execute_review(args, str(self.root), report), 0
             )
         self.assertEqual((self.root / "notes.txt").read_bytes(), b"unchanged")
-        self.assertTrue(list((self.root / "folder-review-data/logs").glob("*.jsonl")))
+        self.assertFalse((self.root / "folder-review-data/logs").exists())
         self.assertFalse(list((self.root / "folder-review-data").glob("work-*")))
         book = load_workbook(report, read_only=True)
         try:

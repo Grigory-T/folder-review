@@ -19,10 +19,11 @@ def payload():
     paths = {
         "folder-review.bat": ROOT / "folder-review.bat",
         "folder-change-review.bat": ROOT / "folder-change-review.bat",
-        "folder-review.ini": ROOT / "folder-review.ini",
-        "folder-change-review.ini": ROOT / "folder-change-review.ini",
+        "folder-review.txt": ROOT / "folder-review.txt",
+        "folder-change-review.txt": ROOT / "folder-change-review.txt",
         "support/folder_change_review.py": ROOT / "folder_change_review.py",
         "support/review_state.py": ROOT / "review_state.py",
+        "support/duplicate_sampling.py": ROOT / "duplicate_sampling.py",
         "support/folder_review.py": ROOT / "folder_review.py",
         "support/LICENSE": ROOT / "LICENSE",
         "support/SECURITY.md": ROOT / "SECURITY.md",
@@ -97,11 +98,11 @@ def build(output, release=False, source_commit=None):
         )
     contents = payload()
     settings = configparser.ConfigParser(interpolation=None)
-    settings.read_string(contents["folder-review.ini"].decode("utf-8-sig"))
+    settings.read_string(contents["folder-review.txt"].decode("utf-8-sig"))
     if settings["review"]["folder"].strip():
         raise ValueError("Release settings must leave the target folder blank")
     comparison = configparser.ConfigParser(interpolation=None)
-    comparison.read_string(contents["folder-change-review.ini"].decode("utf-8-sig"))
+    comparison.read_string(contents["folder-change-review.txt"].decode("utf-8-sig"))
     if any(comparison["compare"][key].strip() for key in ("before", "after")):
         raise ValueError(
             "Release comparison settings must leave both input paths blank"
@@ -114,7 +115,7 @@ def build(output, release=False, source_commit=None):
         "immutable_sha256": {
             n: hashlib.sha256(b).hexdigest()
             for n, b in contents.items()
-            if not n.endswith(".ini")
+            if n not in {"folder-review.txt", "folder-change-review.txt"}
         },
         "delivery": "Source-only Windows x86-64; fixed verified first-time setup; offline recurring scans",
     }

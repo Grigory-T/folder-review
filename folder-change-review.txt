@@ -1,0 +1,19 @@
+# SETTINGS - paste two full state paths, save, then run folder-change-review.bat.
+[compare]
+before =
+after =
+report = folder-change-review.xlsx
+diagnostics = no
+
+# OPTIONS
+# diagnostics: no | yes
+
+# NOTES
+# before: full path to the earlier Folder Review XLSX state.
+# after: full path to the later Folder Review XLSX state.
+# Both states must use the SAME state_mode. Their original folders may be offline.
+# Local, UNC and mapped SMB paths work. Quotes and Unicode are accepted.
+# Paths are literal. Do not escape backslashes or percent signs.
+# report: filename only; saved beside the batch files. Successful runs replace it.
+# diagnostics yes creates neutral logs for troubleshooting. Normally leave no.
+# UTF-8 and UTF-16 with BOM are supported. Unknown/repeated keys are errors.

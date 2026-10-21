@@ -26,6 +26,7 @@ $LocalRootApproved = $false
 $WorkspaceLock = $null
 $OverallExitCode = 10
 $Pins = $null
+$DiagnosticsEnabled = $false
 
 function ConvertTo-NeutralText([string]$Text) {
     foreach ($privatePath in @($Root, $env:USERPROFILE, $env:TEMP, $env:TMP)) {
@@ -68,7 +69,7 @@ function Write-PortableLog(
     [string]$Status,
     [string]$Detail
 ) {
-    if (-not $LocalRootApproved) { return }
+    if (-not $LocalRootApproved -or -not $DiagnosticsEnabled) { return }
     try {
         if (-not (Test-Path -LiteralPath $StateRoot -PathType Container)) {
             New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
@@ -239,7 +240,7 @@ function Confirm-ToolFiles {
         $path = Join-Path $Root $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'A tool file is missing. Extract a fresh ZIP.' }
         if ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Tool files must not be links.' }
-        if ((Get-Sha256 $path) -ne $entry.Value) { throw 'A tool file changed. Extract a fresh ZIP; edit only the two INI files.' }
+        if ((Get-Sha256 $path) -ne $entry.Value) { throw 'A tool file changed. Extract a fresh ZIP; edit only the two TXT config files.' }
     }
 }
 
@@ -298,6 +299,12 @@ try {
     Confirm-LocalFixedDrive $Root
     Confirm-LocalFixedDrive $SupportRoot
     Confirm-ToolFiles
+    $configName = if ($Tool -eq 'change') { 'folder-change-review.txt' } else { 'folder-review.txt' }
+    $configPath = Join-Path $Root $configName
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        $configText = [IO.File]::ReadAllText($configPath)
+        $DiagnosticsEnabled = $configText -match '(?im)^diagnostics\s*=\s*(yes|true|on|1)\s*$'
+    }
     foreach ($path in @($StateRoot,$LocalTemp,$UvCache,$RuntimeRoot,$RuntimeBin,$VenvRoot,$Downloads,$Backend)) {
         if (Test-Path -LiteralPath $path) { Confirm-LocalFixedDrive $path }
     }

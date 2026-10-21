@@ -23,7 +23,7 @@ args.results.parent.mkdir(parents=True, exist_ok=True)
 tool = args.tool.resolve()
 python = tool / "support/state/venv/Scripts/python.exe"
 fixtures = Path(__file__).parent / "fixtures/windows"
-settings = tool / "folder-review.ini"
+settings = tool / "folder-review.txt"
 original = settings.read_bytes()
 results = []
 try:
@@ -45,6 +45,10 @@ def configure():
 core.configure_rar_backend=configure
 raise SystemExit(core.main())
 """)
+        new_wrapper = work / "new_run.py"
+        new_wrapper.write_text(
+            "import sys\nsys.path.insert(0,sys.argv.pop(1))\nimport run_review\nimport folder_review as core\nraise SystemExit(core.main())\n"
+        )
         complete = work / "complete"
         complete.mkdir()
         (complete / "empty/deep").mkdir(parents=True)
@@ -111,7 +115,7 @@ raise SystemExit(core.main())
             )
             new = tool / report_name
             old = baseline / "report.xlsx"
-            flags = []
+            flags = [] if "duplicates" in options else ["--duplicates", "filtered"]
             for key, value in options.items():
                 flags.append("--" + key.replace("_", "-"))
                 if key != "full_metadata":
@@ -132,7 +136,21 @@ raise SystemExit(core.main())
                     ],
                     old,
                 ),
-                ([str(python), str(tool / "support/run_review.py")], new),
+                (
+                    [
+                        str(python),
+                        str(new_wrapper),
+                        str(tool / "support"),
+                        "--root",
+                        str(source),
+                        "--workers",
+                        "1",
+                        "--output",
+                        str(new),
+                        *flags,
+                    ],
+                    new,
+                ),
             ]:
                 run = subprocess.run(
                     command, capture_output=True, text=True, check=False, timeout=60

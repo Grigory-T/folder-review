@@ -1,0 +1,35 @@
+# SETTINGS - edit the values below, save, then run folder-review.bat.
+[review]
+folder =
+duplicates = quick
+workers = auto
+state_mode = quick
+full_metadata = no
+diagnostics = no
+report = folder-review.xlsx
+max_expanded_gib = 100
+max_archive_seconds = 21600
+max_rows = 1048570
+
+# OPTIONS
+# duplicates: quick | normal | full
+# workers: auto | 1 through 64
+# state_mode: quick | sampled | full
+# full_metadata: no | yes
+# diagnostics: no | yes
+
+# NOTES
+# folder: paste a local, UNC or mapped SMB path. Quotes are accepted.
+# Paths are literal. Do not escape backslashes or percent signs.
+# duplicates quick: disabled (off); no duplicate hashing.
+# duplicates normal: size + small beginning/middle/end samples; POSSIBLE matches.
+# duplicates full: exact complete-content hashes; slow over SMB.
+# state_mode is independent of duplicates. Use the SAME state_mode for both states.
+# state_mode quick: size/time only; no extra state-content reads.
+# state_mode sampled: at most 192 KiB/file. full: every byte, slow over SMB.
+# diagnostics yes creates neutral logs for troubleshooting. Normally leave no.
+# report is a base filename. A local date/time suffix is ALWAYS appended.
+# Example: folder-review-2026-10-21_14-05-09.xlsx
+# Reports stay beside the batch files. Existing state workbooks are retained.
+# Archive byte/time limits: 0 disables that limit. Keep defaults for safety.
+# UTF-8 and UTF-16 with BOM are supported. Unknown/repeated keys are errors.
