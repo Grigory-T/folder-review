@@ -495,7 +495,8 @@ class FolderReviewTests(unittest.TestCase):
                 headers = list(
                     next(sheet.iter_rows(min_row=6, max_row=6, values_only=True))
                 )[1:]
-                self.assertTrue(all(header.isascii() for header in headers))
+                self.assertEqual(headers[0], "№пп")
+                self.assertTrue(all(header.isascii() for header in headers[1:]))
                 self.assertEqual(len(headers), len(set(headers)))
                 self.assertEqual(
                     headers.index("File name"),

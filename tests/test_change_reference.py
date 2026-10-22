@@ -1,4 +1,4 @@
-"""Whole-workbook golden parity with the reviewed original comparison writer."""
+"""Original whole-workbook parity except the explicit №пп header convention."""
 
 import hashlib
 import json
@@ -46,6 +46,17 @@ class OriginalReportParityTests(unittest.TestCase):
                     with zipfile.ZipFile(output) as z:
                         for name in z.namelist():
                             data = z.read(name).replace(b"\r\n", b"\n")
+                            if name == "xl/worksheets/sheet1.xml":
+                                # Preserve upstream golden hashes. Only B6's requested
+                                # header is projected back to the original label.
+                                data, count = re.subn(
+                                    rb'(<c r="B6"[^>]*><is><t>)'
+                                    + re.escape("№пп".encode())
+                                    + rb"(</t></is></c>)",
+                                    rb"\1Row number\2",
+                                    data,
+                                )
+                                self.assertEqual(count, 1)
                             if name == "docProps/core.xml":
                                 data = re.sub(
                                     rb"(<dcterms:(?:created|modified)\b[^>]*>)[^<]*(</dcterms:(?:created|modified)>)",

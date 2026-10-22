@@ -94,11 +94,11 @@ class MigratedComparisonTests(unittest.TestCase):
         self.assertNotIn("Leaf", headers)
         self.assertNotIn("FullPath", headers)
         self.assertFalse(any("SHA" in name.upper() for name in headers))
-        self.assertEqual(headers[0], "Row number")
+        self.assertEqual(headers[0], "№пп")
         self.assertEqual(
             headers,
             [
-                "Row number",
+                "№пп",
                 "Level 1",
                 "Leaf depth",
                 "Name without extension",
@@ -169,7 +169,7 @@ class MigratedComparisonTests(unittest.TestCase):
         self.assertEqual(
             headers,
             [
-                "Row number",
+                "№пп",
                 "Level 1",
                 "Level 2",
                 "Leaf depth",

@@ -1,4 +1,4 @@
-FOLDER REVIEW 0.21.1 - WINDOWS X86-64
+FOLDER REVIEW 0.21.2 - WINDOWS X86-64
 
 Extract into a private, writable LOCAL folder. Run without administrator rights. Two tools share one verified runtime:
 

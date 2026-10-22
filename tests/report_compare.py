@@ -13,6 +13,7 @@ NS = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 def normalized_workbook(path):
     """Compare every ZIP member, cell type, style, formula and layout.
 
+    The №пп header at B6 is normalized to its legacy English label.
     The only omissions are access-time values, scan start/end timestamps,
     and workbook creation/modification timestamps. Independent scans may
     legitimately produce different values for these fields.
@@ -64,6 +65,13 @@ def normalized_workbook(path):
                     for row in tree.findall("s:sheetData/s:row", NS):
                         number = int(row.attrib["r"])
                         for cell in row.findall("s:c", NS):
+                            if name.endswith("sheet1.xml") and cell.get("r") == "B6":
+                                text = cell.find("s:is/s:t", NS)
+                                assert text is not None and text.text in {
+                                    "Row number",
+                                    "№пп",
+                                }
+                                text.text = "Row number"
                             if (
                                 name.endswith("sheet1.xml")
                                 and number >= 7

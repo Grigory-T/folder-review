@@ -356,7 +356,7 @@ def write_report(
         "Changed",
     ]
     headers = [
-        "Row number",
+        "№пп",
         *[f"Level {index}" for index in range(1, depth + 1)],
         *fields,
         "last",
@@ -430,7 +430,7 @@ def write_report(
         for index, row in enumerate(rows, 1):
             parts = paths[index - 1]
             values = {
-                "Row number": index,
+                "№пп": index,
                 "Leaf depth": len(parts),
                 "Name without extension": ntpath.splitext(row["FileName"])[0],
                 "File name": row["FileName"],
@@ -458,7 +458,7 @@ def write_report(
                     else centered
                     if label
                     in (
-                        "Row number",
+                        "№пп",
                         "last",
                         "Leaf depth",
                         "Extension",

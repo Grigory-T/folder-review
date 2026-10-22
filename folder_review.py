@@ -65,7 +65,7 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 OUTPUT_FILE = "folder-review.xlsx"
 
 # Increment with the release version; included in neutral diagnostic logs.
-TOOL_VERSION = "0.21.1"
+TOOL_VERSION = "0.21.2"
 
 
 class PerformanceLog:
@@ -3745,7 +3745,7 @@ def write_workbook(
         if full_metadata or header not in ADVANCED_METADATA_HEADERS
     ]
     data_headers = [all_data_headers[index] for index in visible_columns]
-    headers = ["Row number", *data_headers, "last"]
+    headers = ["№пп", *data_headers, "last"]
 
     with _report_workbook(output_path) as wb:
         wb.set_calc_mode("auto", 191029)

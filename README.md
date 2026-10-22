@@ -152,8 +152,9 @@ oversize or corrupt states fail explicitly, without partial report replacement.
 - Only ZIP/RAR/7z names with recognized archive content expand. Office, Visio,
   OpenDocument, EPUB and application packages remain leaves, including inside
   archives. A raw archive renamed `.bin` stays a leaf.
-- Technical labels/values are English. Original names, relative paths and OS
-  diagnostics retain their source text. The full selected root appears once
+- The first table header is **№пп** in both reports, following the flat-table
+  convention. Other technical labels/values are English. Original names, relative
+  paths and OS diagnostics retain their source text. The full selected root appears once
   above the inventory. `::` separates archive members.
 - `last` is always 1. Virtual markers retain empty/inaccessible/problem locations:
   `dummy.dummy`, `deny.deny`, `password.password`, `corrupt.corrupt`, `limit.limit`

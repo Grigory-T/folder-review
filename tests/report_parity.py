@@ -184,6 +184,7 @@ raise SystemExit(core.main())
                     "exit_code": expected,
                     "rows": rows,
                     "all_legacy_workbook_members_match": True,
+                    "row_number_header_normalized_to_legacy_label": True,
                     "new_embedded_state_and_its_three_status_fields_excluded": True,
                 }
             )
