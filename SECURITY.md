@@ -174,7 +174,7 @@ lists, private paths, machine/user identifiers or credentials.
 | F9 COMPLETE / quick modes | Valid interpretation risk; coverage versus verification stated explicitly; defaults and mode semantics unchanged |
 | F10 races / installed tampering | Valid trusted-host limits; no claim of OS isolation or full runtime attestation |
 
-Two details in the review need correction: the v0.21.0 ZIP has 18 source payloads
-plus its generated manifest (19 entries), and sampled state can read three 64 KiB
-ranges, 192 KiB total. Device IDs alone would not detect same-device bind mounts.
+For clarity, the v0.21.0 ZIP has 18 source payloads plus its generated manifest
+(19 entries). Sampled state uses 64 KiB per range, up to 192 KiB total. A device-ID
+check alone would not detect same-device bind mounts; mount metadata is used.
 The review's absence-of-malicious-code observation is not a proof of safety.
