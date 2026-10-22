@@ -403,7 +403,12 @@ def write_report(
         # Match the accepted Folder Review layout, including its taller header.
         sheet.set_row(5, 72)
         sheet.write_string(
-            1, 1, f"Table: File changes in folder {ancestor or root_hint}", title
+            1,
+            1,
+            core.excel_text(
+                f"Table: File changes in folder {ancestor or root_hint}", truncate=False
+            ),
+            title,
         )
         if read_errors:
             sheet.write_string(
@@ -465,7 +470,9 @@ def write_report(
                     else body
                 )
                 if isinstance(value, str):
-                    result = sheet.write_string(index + 5, column, value, fmt)
+                    result = sheet.write_string(
+                        index + 5, column, core.excel_text(value, truncate=False), fmt
+                    )
                     if result != 0:
                         raise ValueError(
                             f"Text cannot fit in an Excel cell: {row['FullPath']}"
@@ -486,9 +493,13 @@ def write_report(
             roots = issue_roots or {}
             issues_sheet.write_string(0, 0, "Read issues", title)
             issues_sheet.write_string(1, 0, "State A root", body)
-            issues_sheet.write_string(1, 1, roots.get("A", root_hint), body)
+            issues_sheet.write_string(
+                1, 1, core.excel_text(roots.get("A", root_hint), truncate=False), body
+            )
             issues_sheet.write_string(2, 0, "State B root", body)
-            issues_sheet.write_string(2, 1, roots.get("B", root_hint), body)
+            issues_sheet.write_string(
+                2, 1, core.excel_text(roots.get("B", root_hint), truncate=False), body
+            )
             issues_sheet.write_row(
                 4,
                 0,
@@ -516,7 +527,12 @@ def write_report(
                     issue["message"],
                 ]
                 for column, value in enumerate(values):
-                    if issues_sheet.write_string(index, column, value, body) != 0:
+                    if (
+                        issues_sheet.write_string(
+                            index, column, core.excel_text(value, truncate=False), body
+                        )
+                        != 0
+                    ):
                         raise ValueError("Read issue text cannot fit in an Excel cell.")
             issues_sheet.autofilter(4, 0, 4 + len(read_errors), 4)
             issues_sheet.freeze_panes(5, 0)

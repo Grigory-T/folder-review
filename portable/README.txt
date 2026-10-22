@@ -1,6 +1,6 @@
-FOLDER REVIEW 0.21.0 - WINDOWS X86-64
+FOLDER REVIEW 0.21.1 - WINDOWS X86-64
 
-Extract into a writable LOCAL folder. Two tools share one verified runtime:
+Extract into a private, writable LOCAL folder. Run without administrator rights. Two tools share one verified runtime:
 
 1. folder-review.bat: create a folder inventory and embedded comparison state.
    Edit folder-review.txt in Notepad. Set folder; keep state_mode=quick for no
@@ -29,8 +29,10 @@ Reports stay beside the batch files. No AppData/system-temp fallback.
 Keep the WHOLE prepared folder when moving it. A move rebuilds its venv from
 its retained cache offline. Incomplete cache fails; use a fresh extraction for
 online setup/repair rather than mixing releases. Only one operation per folder.
-Temporary work cleans normally; crashes can leave work-* under support/state.
-Close all instances before cleaning leftovers. Input files stay read-only.
+Temporary work, including report staging, cleans normally; crashes can leave
+private partial data in work-* under support/state.
+Close all instances before cleaning leftovers. Input files stay read-only. Extra code/package/cache entries under support are
+rejected; keep personal files outside support. Installed runtime and host are trusted.
 SMB inputs are supported; execute the tool and keep outputs on a local drive.
 
 Exit codes: 0 complete, 2 usable partial report, 1 review/configuration error,
@@ -43,3 +45,8 @@ validation are published with the matching release. Safeguards are application
 checks, not an OS sandbox or a guarantee against unknown upstream flaws.
 
 Duplicate modes: quick (default/off, no hashes); normal (at most 24 KiB samples per candidate, POSSIBLE duplicate groups); full (complete hashes, exact groups, slow). State mode is independent. The TXT files list exact option words separately from notes.
+
+COMPLETE describes coverage, not verified contents or a consistent snapshot.
+Windows reparse/cloud-placeholder rows are omitted from comparison state.
+Linux submounts are skipped with PARTIAL/Unknown coverage. Archive limits are
+cooperative, not RAM/CPU isolation; use a sandbox/VM for hostile archives.

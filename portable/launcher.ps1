@@ -234,6 +234,24 @@ function Install-VerifiedUv {
 
 function Confirm-ToolFiles {
     $manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    # Imported code must come from the reviewed flat support layout. In particular,
+    # packages, loose .pyc files and __pycache__ must not shadow hashed .py files.
+    $expected = @{ 'manifest.json' = 'file'; 'state' = 'directory' }
+    foreach ($entry in $manifest.immutable_sha256.PSObject.Properties) {
+        $relative = $entry.Name.Replace('\','/')
+        if ($relative.StartsWith('support/')) {
+            $name = $relative.Substring(8)
+            if (-not $name -or $name.Contains('/')) { throw 'Unexpected packaged support layout.' }
+            $expected[$name] = 'file'
+        }
+    }
+    foreach ($item in Get-ChildItem -LiteralPath $SupportRoot -Force) {
+        if (-not $expected.ContainsKey($item.Name) -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            ($item.PSIsContainer -ne ($expected[$item.Name] -eq 'directory'))) {
+            throw 'Unexpected support entry. Extract a fresh ZIP; keep personal files outside support.'
+        }
+    }
     foreach ($entry in $manifest.immutable_sha256.PSObject.Properties) {
         $relative = $entry.Name
         if ($relative -match '(^[\\/]|:|(^|[\\/])\.\.([\\/]|$))') { throw 'Invalid manifest path.' }
@@ -356,8 +374,16 @@ try {
             if ($catalog.Count -ne 1 -or ([string]$catalog[0].url).Replace('%2B','+') -ne ([string]$Pins.python.url).Replace('%2B','+')) {
                 throw 'Pinned Python catalog origin mismatch.'
             }
-            Invoke-Checked 'python_install' $UvExe @('--no-config','--system-certs','--managed-python','python','install',
-                $PythonRequest,'--install-dir',$RuntimeRoot,'--no-bin','--no-registry')
+            # Verify the full distribution before uv reads it. The file mirror is
+            # local-only, so installation cannot fetch a different archive online.
+            $mirrorRoot = Join-Path $Downloads 'python-mirror'
+            $archiveDirectory = Join-Path $mirrorRoot $Pins.python.release
+            New-Item -ItemType Directory -Force -Path $archiveDirectory | Out-Null
+            $pythonArchive = Join-Path $archiveDirectory $Pins.python.archive
+            Download-VerifiedFile $Pins.python.url $pythonArchive $Pins.python.sha256
+            $mirrorUri = ([Uri]($mirrorRoot + '\')).AbsoluteUri
+            Invoke-Checked 'python_install' $UvExe @('--no-config','--offline','--managed-python','python','install',
+                $PythonRequest,'--mirror',$mirrorUri,'--install-dir',$RuntimeRoot,'--no-bin','--no-registry')
         }
         Confirm-PinnedRuntime
         Sync-LocalEnvironment
@@ -374,7 +400,7 @@ try {
         Write-Host 'Setup: COMPLETE'
     }
     $Mode = 'review'
-    Write-PortableLog 'review' 'run_start' 'running' 'ini_config'
+    Write-PortableLog 'review' 'run_start' 'running' 'txt_config'
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'

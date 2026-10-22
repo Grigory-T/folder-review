@@ -7,7 +7,7 @@ are inspected recursively. XlsxWriter is the only report writer.
 [Download the small Windows ZIP](../../releases/latest/download/folder-review-windows-x64.zip) ·
 [Releases and checksums](../../releases/latest)
 
-Extract into a writable local folder. Open **folder-review.txt** in Windows Notepad,
+Extract into a private, writable local folder. Run without administrator rights. Open **folder-review.txt** in Windows Notepad,
 set `folder`, save, then double-click **folder-review.bat**. Use that same batch file for
 every scan. Use **folder-change-review.bat** with its separate TXT config to compare two saved states. No GUI, system Python, uv or 7-Zip installation is required.
 
@@ -28,17 +28,17 @@ folder-change-review.xlsx comparison report
 All application-created files stay in that folder. Runtime, cache, optional setup journal,
 optional neutral logs and temporary work stay under `support/state/`. There is no
 AppData/system-temp fallback. Temporary scan work is removed on normal exit;
-a crash can leave `work-*` directories. Close all instances before cleaning them.
+a crash can leave `work-*` directories, including partial report data. Close all instances before cleaning them.
 Keep the whole folder together when copying/moving it: after a move the launcher
 recreates its venv from the retained cache **offline**, preserving settings and
 reports. If that cache is incomplete, use a fresh extraction with online setup.
 
 Both reports always stay beside the batch files. Their base filenames can be changed in settings. Inventory reports receive a local date/time suffix; comparison output keeps its configured filename.
 Inventory states are retained; the comparison report is atomically replaced only after a successful save. The tool
-may be inside input: its support folder and selected report are excluded. Other
+may be inside input: its support folder, own dated reports and selected report are excluded. Other
 input files stay read-only. Selecting support itself as input is rejected. SMB
 input remains supported; the tool and report stay local. Links are listed without
-following their targets. OS access-time updates/cloud hydration may still occur.
+following their targets. Linux nested mounts (including bind mounts) are skipped and reported as PARTIAL. OS access-time updates/cloud hydration may still occur.
 
 ## Settings
 
@@ -115,7 +115,7 @@ States are not encrypted and contain original paths/names; treat them as private
 Original folder-change-review rules are preserved: exact full-path union, no
 same-root validation or rename detection; a move is a deletion plus an addition.
 ZIP/RAR/7z are opaque physical files in comparison, even while the visible
-inventory expands them. Empty-folder/virtual rows and links do not become files.
+inventory expands them. Empty-folder/virtual rows and links do not become files. All Windows reparse points, including cloud placeholders, are omitted from comparison state; hydration/status changes may appear as additions/deletions.
 Temporary files (`~*`, Thumbs.db, *.tmp, *.temp), .states, *.fcrstate and reserved
 old comparison artifacts are excluded. Recorded tool-support/output exclusions
 apply to both states. The two selected state workbooks are also omitted at matching recorded paths,
@@ -166,6 +166,7 @@ oversize or corrupt states fail explicitly, without partial report replacement.
   measure as literal text for manual use.
 - **0 COMPLETE**; **2 PARTIAL**, usable report with coverage errors; **1 fatal**
   review/configuration error. Setup errors return **10**, launcher errors **30**.
+  COMPLETE describes coverage, not verified contents or a consistent snapshot.
   Read `scan_status` after a PARTIAL run. Archive/header/password/path errors are
   retained, including encrypted-header archives that cannot be inspected.
 
@@ -186,12 +187,13 @@ the existing dependency versions in `uv.lock`. Pins are in
 from that lock; user machines never resolve a new graph or build source packages.
 
 uv's official archive/executable are verified before execution. Its pinned
-catalog selects/checksums the exact official CPython archive; core Python hashes
-are checked independently. Wheels come from official PyPI with required hashes,
+catalog selects the exact expected CPython URL. The launcher checks the full
+archive against its own SHA-256 pin and installs it from a local file mirror
+in offline mode; core Python hashes are also checked independently. Wheels come from official PyPI with required hashes,
 no source builds and no custom index overrides. Official pinned `7zr.exe` (x86,
 setup-only; standard Windows x64 WoW64) extracts just the existing 64-bit 7-Zip
 backend and license from the verified installer. The installer is never executed.
-Every extracted backend file is independently hash-checked. No system registration
+Every extracted backend file is independently hash-checked. Unexpected code/package/cache entries under support are rejected before Python starts. No system registration
 or administrator install is performed. No auto-updater or telemetry is included.
 
 Build the deterministic source-only ZIP with:
@@ -212,6 +214,10 @@ then `python -B folder_review.py --root /data/input`. With no arguments it reads
 folder-review.txt. Run regression tests with the `test` dependency group; openpyxl is
 an independent test reader, never the production writer. Native bootstrap/report
 acceptance lives in `tests/windows_portable.ps1`.
+
+From v0.21.1, release tags and checksums carry SSH signatures. Trust the signing
+key through a known channel; bundled checksums/signatures alone do not authenticate
+a new key. See the verification commands and explicit threat model in SECURITY.md.
 
 [Security boundaries](SECURITY.md) · [Download/license notices](portable/THIRD_PARTY.txt).
 Original source is MIT; downloaded components retain their own licenses. Windows

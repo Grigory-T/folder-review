@@ -65,7 +65,7 @@ ROOT_FOLDER = r"PASTE_FOLDER_PATH_HERE"
 OUTPUT_FILE = "folder-review.xlsx"
 
 # Increment with the release version; included in neutral diagnostic logs.
-TOOL_VERSION = "0.21.0"
+TOOL_VERSION = "0.21.1"
 
 
 class PerformanceLog:
@@ -764,21 +764,42 @@ def portable_directory() -> Path:
     return directory
 
 
-def linux_filesystem(candidate: str) -> str:
-    """Read local mount metadata; no server or trial file access."""
-    best_mount = ""
-    filesystem = ""
-    with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
+def linux_mounts() -> list[tuple[str, str]]:
+    """Snapshot mount paths/types locally, including same-device bind mounts."""
+    result = []
+    with open(
+        "/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape"
+    ) as mounts:
         for line in mounts:
             fields, details = line.rstrip().split(" - ", 1)
             mount = re.sub(
                 r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields.split()[4]
             )
-            if (
-                candidate == mount or candidate.startswith(mount.rstrip("/") + "/")
-            ) and len(mount) > len(best_mount):
-                best_mount, filesystem = mount, details.split()[0]
-    return filesystem
+            result.append((mount, details.split()[0]))
+    return result
+
+
+def linux_filesystem(candidate: str) -> str:
+    """Read local mount metadata; no server or trial file access."""
+    matches = [
+        (mount, filesystem)
+        for mount, filesystem in linux_mounts()
+        if candidate == mount or candidate.startswith(mount.rstrip("/") + "/")
+    ]
+    return max(matches, key=lambda item: len(item[0]), default=("", ""))[1]
+
+
+def nested_mounts(root: str) -> frozenset[str]:
+    """Do not cross Linux submounts; root itself may be local or SMB."""
+    if os.name == "nt":
+        return frozenset()
+    real = resolved_path(root)
+    prefix = real.rstrip("/") + "/"
+    return frozenset(
+        os.path.join(absolute_path(root), os.path.relpath(mount, real))
+        for mount, _ in linux_mounts()
+        if mount != real and mount.startswith(prefix)
+    )
 
 
 def remote_filesystem(filesystem: str) -> bool:
@@ -2036,6 +2057,7 @@ def scan_folder(
     folder_path: str,
     levels: tuple[str, ...],
     excluded_paths: set[str],
+    mount_points: frozenset[str] = frozenset(),
 ) -> tuple[
     list[tuple[str, tuple[str, ...]]],
     list[PhysicalFile],
@@ -2053,6 +2075,23 @@ def scan_folder(
                 logical_path = os.path.join(folder_path, entry.name)
                 try:
                     if normalized_key(logical_path) in excluded_paths:
+                        continue
+                    if logical_path in mount_points:
+                        message = "Nested mount point not traversed."
+                        diagnostics.append(
+                            Diagnostic(logical_path, "mount boundary", message)
+                        )
+                        files.append(
+                            PhysicalFile(
+                                logical_path,
+                                levels + (entry.name,),
+                                0,
+                                inspect_content=False,
+                                virtual_folder=True,
+                                folder_unreadable=True,
+                                folder_error=message,
+                            )
+                        )
                         continue
 
                     if os.name == "nt":
@@ -2165,8 +2204,11 @@ def scan_tree(
     stats = ScanStats()
     last_print = time.monotonic()
 
+    mount_points = nested_mounts(root_folder)
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        pending = {executor.submit(scan_folder, root_folder, (), excluded_paths)}
+        pending = {
+            executor.submit(scan_folder, root_folder, (), excluded_paths, mount_points)
+        }
 
         while pending:
             done, pending = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
@@ -2175,7 +2217,8 @@ def scan_tree(
                 stats.folders += 1
                 stats.skipped_folders += int(skipped_folder)
                 stats.skipped_entries += sum(
-                    diagnostic.stage == "entry metadata" for diagnostic in diagnostics
+                    diagnostic.stage in {"entry metadata", "mount boundary"}
+                    for diagnostic in diagnostics
                 )
                 stats.diagnostics.extend(diagnostics)
                 all_files.extend(files)
@@ -2191,7 +2234,11 @@ def scan_tree(
                 for subfolder_path, levels in subfolders:
                     pending.add(
                         executor.submit(
-                            scan_folder, subfolder_path, levels, excluded_paths
+                            scan_folder,
+                            subfolder_path,
+                            levels,
+                            excluded_paths,
+                            mount_points,
                         )
                     )
 
@@ -3447,11 +3494,19 @@ def apply_physical_row_limit(
 # Excel output ---------------------------------------------------------------
 
 
-def excel_text(value: str | None) -> str | None:
+def excel_text(value: str | None, *, truncate: bool = True) -> str | None:
     if value is None:
         return None
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "�", str(value))
-    if len(text) > EXCEL_MAX_TEXT_LENGTH:
+    # POSIX surrogateescape / unpaired NTFS surrogates are not XML text.
+    # Display an explicit escape while the hidden state retains the exact name.
+    text = re.sub(
+        r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]",
+        lambda match: (
+            f"\\u{ord(match[0]):04x}" if 0xD800 <= ord(match[0]) <= 0xDFFF else "�"
+        ),
+        str(value),
+    )
+    if truncate and len(text) > EXCEL_MAX_TEXT_LENGTH:
         text = text[: EXCEL_MAX_TEXT_LENGTH - 1] + "…"
     return text
 
@@ -3547,8 +3602,16 @@ def _report_workbook(output_path: Path):
         and normalized_key(output_name) != _report_output_path
     ):
         raise PermissionError("Only the selected report output may be written.")
+    # Normal product runs stage in their existing same-volume owned workspace.
+    # Low-level callers without safe_runtime keep the adjacent atomic-save path.
+    staging_folder = (
+        tempfile.gettempdir()
+        if _protected_root is not None
+        and normalized_key(output_folder) == normalized_key(application_directory())
+        else output_folder
+    )
     temporary = os.path.join(
-        output_folder, f".folder-review-{os.urandom(16).hex()}.tmp.xlsx"
+        staging_folder, f".folder-review-{os.urandom(16).hex()}.tmp.xlsx"
     )
     allowed = {normalized_key(temporary), normalized_key(output_name)}
     _report_write_paths.update(allowed)
@@ -4616,6 +4679,7 @@ def inventory_report_files(output: Path) -> list[Path]:
             )
             for stem in stems
         )
+        or re.fullmatch(r"\.folder-review-[0-9a-f]{32}\.tmp\.xlsx", name, re.IGNORECASE)
     ]
 
 

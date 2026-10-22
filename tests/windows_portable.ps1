@@ -67,6 +67,9 @@ Invoke-Tool 'fresh-setup-and-scan' 0
 if($lastOutput -notmatch 'Setup: COMPLETE' -or $lastOutput -notmatch 'Scan status: COMPLETE') { throw 'Fresh preparation did not run' }
 $report=Get-InventoryReport
 if((Test-Path (Join-Path $root 'support\state\logs')) -or (Test-Path (Join-Path $root 'support\state\setup.jsonl'))){throw 'Default scan created logs'}
+$pins=Get-Content -LiteralPath (Join-Path $root 'support/pins.json') -Raw | ConvertFrom-Json
+$pythonArchive=Join-Path (Join-Path (Join-Path $root 'support/state/downloads/python-mirror') $pins.python.release) $pins.python.archive
+if((Get-FileHash -LiteralPath $pythonArchive).Hash.ToLowerInvariant() -ne $pins.python.sha256){throw 'Full Python archive was not pinned/verified'}
 Set-Setting 'diagnostics' 'yes'
 if(-not(Test-Path -LiteralPath $report)) { throw 'Report not beside the launcher' }
 # The inventory owns capture; the second entry point consumes those exact XLSX files.
@@ -135,6 +138,21 @@ if((Get-FileHash -LiteralPath $report).Hash -ne $reportBefore) { throw 'Invalid 
 Set-Setting 'workers' 'auto'
 $stream=[IO.File]::Open((Join-Path $root 'support\state\workspace.lock'),'OpenOrCreate','ReadWrite','None')
 try { Invoke-Tool 'concurrent-workspace-rejected' 10; Invoke-Tool 'comparison-shares-workspace-lock' 10 -Change } finally { $stream.Dispose() }
+# Added packages/modules/cache files must fail before Python can import them.
+$package=Join-Path $root 'support/folder_review'
+New-Item -ItemType Directory -Path $package | Out-Null
+[IO.File]::WriteAllText((Join-Path $package '__init__.py'),'raise SystemExit(77)',$utf8)
+try {
+    Invoke-Tool 'unlisted-package-shadow-rejected-inventory' 10
+    Invoke-Tool 'unlisted-package-shadow-rejected-comparison' 10 -Change
+} finally { Remove-Item -LiteralPath $package -Recurse -Force }
+foreach($name in @('xlsxwriter.py','folder_review.pyc','__pycache__')) {
+    $extra=Join-Path (Join-Path $root 'support') $name
+    if($name -eq '__pycache__'){New-Item -ItemType Directory -Path $extra|Out-Null}
+    else{[IO.File]::WriteAllText($extra,'raise SystemExit(77)',$utf8)}
+    try { Invoke-Tool ('unlisted-'+$name+'-rejected') 10 }
+    finally { Remove-Item -LiteralPath $extra -Recurse -Force }
+}
 $core=Join-Path $root 'support\folder_review.py'
 $original=[IO.File]::ReadAllBytes($core)
 [IO.File]::AppendAllText($core,"`n# changed",$utf8)
@@ -187,6 +205,8 @@ $receipt=[ordered]@{
     smb_input_checked=$smbAvailable
     xlsx_comparison_input_bytes_unchanged=$true
     shared_runtime_both_entry_points=$true
+    full_python_archive_hash_checked=$true
+    unlisted_support_imports_rejected=$true
     default_runs_create_no_logs=$true
     timestamped_states_preserved=$true
     cases=$records.ToArray()

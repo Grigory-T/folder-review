@@ -111,7 +111,11 @@ def capture_state(root, physical_files, stats, mode, workers, output):
 
     errors = []
     for diagnostic in stats.diagnostics:
-        kind = "directory" if diagnostic.stage == "folder enumeration" else "unknown"
+        kind = (
+            "directory"
+            if diagnostic.stage in {"folder enumeration", "mount boundary"}
+            else "unknown"
+        )
         item = issue(diagnostic.path, kind, diagnostic.error)
         if not excluded(item["path"], item["parts"], kind):
             errors.append(item)
